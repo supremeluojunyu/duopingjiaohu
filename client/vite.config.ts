@@ -10,5 +10,15 @@ export default defineConfig({
     port: 8080,
     host: true,
     https: useHttps ? {} : undefined,
+    proxy: {
+      '/api': {
+        target: process.env.VITE_SIGNALING_PROXY ?? 'http://127.0.0.1:9876',
+        changeOrigin: true,
+      },
+      '/downloads': {
+        target: process.env.VITE_SIGNALING_PROXY ?? 'http://127.0.0.1:9876',
+        changeOrigin: true,
+      },
+    },
   },
 });

@@ -6,12 +6,34 @@ import { handleClose, handleMessage } from './message-handler.js';
 import { getIceConfig } from './ice-config.js';
 import { getServerStats } from './stats.js';
 import { roomManager } from './room-manager.js';
+import {
+  ensureDownloadsDir,
+  getDownloadsDir,
+  readReleaseInfo,
+  toPublicRelease,
+} from './app-release.js';
 
 const PORT = Number(process.env.PORT ?? 9876);
 const app = express();
 
 app.use(cors());
 app.use(express.json());
+
+ensureDownloadsDir();
+app.use('/downloads', express.static(getDownloadsDir(), {
+  setHeaders(res, filePath) {
+    if (filePath.endsWith('.apk')) {
+      res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+      res.setHeader('Content-Disposition', 'attachment; filename="holographic.apk"');
+    }
+  },
+}));
+
+function getBaseUrl(req: express.Request): string {
+  const proto = req.get('x-forwarded-proto') ?? req.protocol;
+  const host = req.get('x-forwarded-host') ?? req.get('host') ?? `localhost:${PORT}`;
+  return `${proto}://${host}`;
+}
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', ...getServerStats() });
@@ -23,6 +45,11 @@ app.get('/config/ice', (_req, res) => {
 
 app.get('/stats', (_req, res) => {
   res.json(getServerStats());
+});
+
+app.get('/api/app/version', (req, res) => {
+  const info = readReleaseInfo();
+  res.json(toPublicRelease(info, getBaseUrl(req)));
 });
 
 app.post('/rooms', (_req, res) => {
@@ -60,4 +87,6 @@ wss.on('connection', (ws) => {
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`[Holographic Signaling] HTTP + WebSocket on http://0.0.0.0:${PORT}`);
   console.log(`  WebSocket: ws://0.0.0.0:${PORT}/ws`);
+  console.log(`  APK 版本: http://0.0.0.0:${PORT}/api/app/version`);
+  console.log(`  APK 下载: http://0.0.0.0:${PORT}/downloads/app-latest.apk`);
 });

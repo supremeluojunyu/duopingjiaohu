@@ -12,6 +12,7 @@
     "install:all": "npm install --prefix server && npm install --prefix client && npm install --prefix desktop",
     "start": "bash scripts/start-all.sh",
     "start:https": "bash scripts/start-all.sh https",
+    "publish:apk": "bash scripts/publish-apk.sh",
     "benchmark": "npm run dev & sleep 2 && tsx scripts/benchmark.ts && kill %1"
   }
 }

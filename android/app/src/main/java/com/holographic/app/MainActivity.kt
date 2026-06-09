@@ -9,6 +9,7 @@ import android.hardware.SensorManager
 import android.os.Bundle
 import android.view.View
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
@@ -41,7 +42,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     }
 
     private val qrLauncher = registerForActivityResult(ScanContract()) { result ->
-        result.contents?.let { joinRoom(it.trim()) }
+        result.contents?.let { handleScanContent(it) }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -55,10 +56,12 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
 
         setupUi()
         requestPermissionsIfNeeded()
+        checkForAppUpdate(showNoUpdateToast = false)
     }
 
     private fun setupUi() {
         binding.btnScanJoin.setOnClickListener { scanQrCode() }
+        binding.btnCheckUpdate.setOnClickListener { checkForAppUpdate(showNoUpdateToast = true) }
         binding.btnStartCast.setOnClickListener { togglePublishing() }
         binding.switchSegmentation.setOnCheckedChangeListener { _, checked ->
             segmentationEnabled = checked
@@ -78,9 +81,49 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
 
     private fun scanQrCode() {
         qrLauncher.launch(ScanOptions().apply {
-            setPrompt("扫描房间二维码")
+            setPrompt("扫描房间或下载二维码")
             setBeepEnabled(false)
         })
+    }
+
+    private fun handleScanContent(content: String) {
+        when (val parsed = QrContentParser.parse(content)) {
+            is QrContentParser.ScanResult.JoinRoom -> joinRoom(parsed.roomId)
+            is QrContentParser.ScanResult.DownloadPage -> checkForAppUpdate(showNoUpdateToast = true)
+        }
+    }
+
+    private fun checkForAppUpdate(showNoUpdateToast: Boolean) {
+        Thread {
+            val release = AppUpdateChecker.fetchRelease(SignalingConfig.SERVER_URL)
+            val localCode = BuildConfig.VERSION_CODE
+            runOnUiThread {
+                if (release == null) {
+                    if (showNoUpdateToast) {
+                        Toast.makeText(this, "无法检查更新", Toast.LENGTH_SHORT).show()
+                    }
+                    return@runOnUiThread
+                }
+                if (!release.available || release.downloadUrl.isNullOrBlank()) {
+                    if (showNoUpdateToast) {
+                        Toast.makeText(this, "服务器暂未发布 APK", Toast.LENGTH_SHORT).show()
+                    }
+                    return@runOnUiThread
+                }
+                if (release.versionCode > localCode) {
+                    AlertDialog.Builder(this)
+                        .setTitle("发现新版本 v${release.versionName}")
+                        .setMessage(release.releaseNotes.ifBlank { "是否下载并安装？" })
+                        .setPositiveButton("下载") { _, _ ->
+                            AppUpdateChecker.openDownloadUrl(this, release.downloadUrl!!)
+                        }
+                        .setNegativeButton("稍后", null)
+                        .show()
+                } else if (showNoUpdateToast) {
+                    Toast.makeText(this, "已是最新版本", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }.start()
     }
 
     private fun joinRoom(roomId: String) {

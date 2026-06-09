@@ -21,7 +21,7 @@ export function getIceServers(): RTCIceServer[] {
 }
 
 export const DEFAULT_SIGNALING_URL =
-  import.meta.env.VITE_SIGNALING_URL ?? 'http://localhost:8765';
+  import.meta.env.VITE_SIGNALING_URL ?? 'http://localhost:9876';
 
 export const RECONNECT_INTERVAL_MS = 3000;
 export const MAX_RECONNECT_ATTEMPTS = 10;

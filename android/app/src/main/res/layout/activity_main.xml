@@ -46,6 +46,13 @@
             android:layout_height="48dp"
             android:layout_marginTop="8dp"
             android:text="扫码加入" />
+
+        <Button
+            android:id="@+id/btnCheckUpdate"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="8dp"
+            android:text="检查更新" />
     </LinearLayout>
 
     <LinearLayout

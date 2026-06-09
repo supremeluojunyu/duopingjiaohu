@@ -1,0 +1,10 @@
+{
+  "versionName": "0.1.0",
+  "versionCode": 1,
+  "fileName": "",
+  "fileSize": 0,
+  "sha256": "",
+  "updatedAt": "2026-06-09T00:00:00.000Z",
+  "available": false,
+  "releaseNotes": "请运行 scripts/publish-apk.sh 发布 Android 安装包"
+}

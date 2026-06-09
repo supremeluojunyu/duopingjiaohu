@@ -64,3 +64,36 @@ jobs:
 
       - name: Build signaling image
         run: docker build -t holographic-signaling ./server
+
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Build debug APK
+        run: |
+          cd android
+          chmod +x gradlew 2>/dev/null || true
+          if [ -f gradlew ]; then
+            ./gradlew assembleDebug --no-daemon
+          else
+            gradle assembleDebug --no-daemon
+          fi
+
+      - name: Publish APK manifest
+        run: bash scripts/publish-apk.sh debug "CI 自动构建"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: holographic-android
+          path: |
+            server/public/downloads/app-latest.apk
+            server/public/downloads/version.json

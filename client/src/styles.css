@@ -110,6 +110,159 @@ button.active { background: var(--primary); border-color: var(--primary); }
 
 .btn-danger { background: var(--danger); border-color: var(--danger); }
 .btn-secondary { width: 100%; margin-top: 0.5rem; }
+.btn-link {
+  background: transparent;
+  border: none;
+  color: var(--primary);
+  text-decoration: underline;
+  padding: 0.25rem;
+  margin-top: 0.25rem;
+}
+.btn-link:hover { background: transparent; color: var(--accent); }
+
+/* APK Download Page */
+.download-screen {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 1.5rem;
+  background: radial-gradient(ellipse at 50% 0%, #1e1b4b 0%, var(--bg) 60%);
+}
+
+.download-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 2rem;
+  width: 100%;
+  max-width: 520px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.download-header h1 {
+  font-size: 1.5rem;
+  background: linear-gradient(135deg, #60a5fa, #a78bfa);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.download-info {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1rem;
+}
+
+.version-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.version-badge {
+  background: var(--primary);
+  color: white;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.version-code {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.update-badge {
+  background: var(--success);
+  color: #052e16;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.release-notes {
+  margin-top: 0.75rem;
+  color: var(--text);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.meta-list {
+  margin-top: 0.75rem;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.meta-list div {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  font-size: 0.85rem;
+}
+
+.meta-list dt { color: var(--text-muted); }
+.meta-list dd { color: var(--text); }
+
+.download-qr-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 1rem;
+  margin-top: 0.5rem;
+}
+
+.download-qr-block {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  background: var(--surface2);
+  border-radius: 12px;
+}
+
+.download-qr-block canvas { border-radius: 8px; }
+.download-qr-block span {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.download-hint {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+.download-hint code {
+  background: var(--surface2);
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+}
+
+.download-error {
+  color: #fca5a5;
+  font-size: 0.85rem;
+}
+
+.download-card label {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.download-card input {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.6rem 0.75rem;
+  color: var(--text);
+  font-size: 0.95rem;
+}
 
 /* App Layout */
 .app-layout {

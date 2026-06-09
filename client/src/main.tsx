@@ -5,6 +5,7 @@ import { AngleGuideOverlay } from './components/AngleGuideOverlay';
 import { DeviceList } from './components/DeviceList';
 import { PerformancePanel } from './components/PerformancePanel';
 import { RoomQr } from './components/RoomQr';
+import { ApkDownloadPage } from './components/ApkDownloadPage';
 import { useScene3D } from './hooks/useScene3D';
 import { shouldReduceQuality, useWebRTCStats } from './hooks/useWebRTCStats';
 import { DEFAULT_SIGNALING_URL } from './config';
@@ -33,6 +34,11 @@ function getInitialJoinForm() {
   };
 }
 
+function isDownloadPage() {
+  const params = new URLSearchParams(window.location.search);
+  return params.get('page') === 'download';
+}
+
 function App() {
   const [connected, setConnected] = useState(false);
   const [roomId, setRoomId] = useState<string | null>(null);
@@ -52,6 +58,25 @@ function App() {
   const [backgroundStream, setBackgroundStream] = useState<MediaStream | null>(null);
   const [qualityReduced, setQualityReduced] = useState(false);
   const [joinForm, setJoinForm] = useState(getInitialJoinForm);
+  const [showDownloadPage, setShowDownloadPage] = useState(isDownloadPage);
+
+  const goToDownloadPage = () => {
+    const params = new URLSearchParams(window.location.search);
+    params.set('page', 'download');
+    params.set('server', joinForm.serverUrl);
+    const next = `${window.location.pathname}?${params.toString()}`;
+    window.history.replaceState(null, '', next);
+    setShowDownloadPage(true);
+  };
+
+  const leaveDownloadPage = () => {
+    const params = new URLSearchParams(window.location.search);
+    params.delete('page');
+    const query = params.toString();
+    const next = query ? `${window.location.pathname}?${query}` : window.location.pathname;
+    window.history.replaceState(null, '', next);
+    setShowDownloadPage(false);
+  };
 
   const signalingRef = useRef<SignalingClient | null>(null);
   const webrtcRef = useRef<WebRTCManager | null>(null);
@@ -315,6 +340,15 @@ function App() {
     }
   };
 
+  if (showDownloadPage) {
+    return (
+      <ApkDownloadPage
+        serverUrl={joinForm.serverUrl}
+        onBack={leaveDownloadPage}
+      />
+    );
+  }
+
   if (!connected) {
     return (
       <div className="join-screen">
@@ -370,6 +404,10 @@ function App() {
           </label>
 
           <button className="btn-primary" onClick={joinRoom}>进入房间</button>
+
+          <button className="btn-link" type="button" onClick={goToDownloadPage}>
+            下载 Android 客户端
+          </button>
         </div>
       </div>
     );

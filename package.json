@@ -1,0 +1,17 @@
+{
+  "name": "holographic-system",
+  "version": "0.1.0",
+  "private": true,
+  "description": "实时全息投影与多屏互动系统",
+  "scripts": {
+    "dev:server": "npm run dev --prefix server",
+    "dev:client": "npm run dev --prefix client",
+    "dev:https": "npm run dev:https --prefix client",
+    "dev": "npm run dev:server & npm run dev:client",
+    "build": "npm run build --prefix server && npm run build --prefix client",
+    "install:all": "npm install --prefix server && npm install --prefix client && npm install --prefix desktop",
+    "start": "bash scripts/start-all.sh",
+    "start:https": "bash scripts/start-all.sh https",
+    "benchmark": "npm run dev & sleep 2 && tsx scripts/benchmark.ts && kill %1"
+  }
+}

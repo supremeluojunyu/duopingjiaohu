@@ -1,0 +1,45 @@
+{
+  "name": "@holographic/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "main": "main.js",
+  "author": "Holographic System",
+  "description": "实时全息投影与多屏互动系统 - 桌面客户端",
+  "scripts": {
+    "start": "electron .",
+    "start:hologram": "electron . --hologram",
+    "build:client": "npm run build --prefix ../client",
+    "build:win": "npm run build:client && electron-builder --win --x64",
+    "build:linux": "npm run build:client && electron-builder --linux AppImage deb",
+    "build:all": "npm run build:client && electron-builder --win --linux"
+  },
+  "build": {
+    "appId": "com.holographic.system",
+    "productName": "全息投影系统",
+    "directories": { "output": "dist", "buildResources": "build" },
+    "files": ["main.js", "preload.js"],
+    "extraResources": [
+      { "from": "../client/dist", "to": "client", "filter": ["**/*"] }
+    ],
+    "win": {
+      "target": [{ "target": "nsis", "arch": ["x64"] }, { "target": "portable", "arch": ["x64"] }]
+    },
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "category": "Video"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "全息投影系统"
+    },
+    "portable": {
+      "artifactName": "HolographicSystem-Portable-${version}.exe"
+    }
+  },
+  "devDependencies": {
+    "electron": "^34.3.0",
+    "electron-builder": "^25.1.8"
+  }
+}

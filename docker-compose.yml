@@ -1,0 +1,29 @@
+version: "3.8"
+
+services:
+  signaling:
+    build: ./server
+    ports:
+      - "${PORT:-8765}:8765"
+    environment:
+      PORT: ${PORT:-8765}
+      TURN_URL: ${TURN_URL:-}
+      TURN_USER: ${TURN_USER:-}
+      TURN_PASS: ${TURN_PASS:-}
+      TURN_URLS: ${TURN_URLS:-}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:8765/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  coturn:
+    image: coturn/coturn:4.6.2
+    network_mode: host
+    volumes:
+      - ./deploy/turnserver.conf:/etc/coturn/turnserver.conf:ro
+    command: ["-c", "/etc/coturn/turnserver.conf"]
+    restart: unless-stopped
+    profiles:
+      - turn

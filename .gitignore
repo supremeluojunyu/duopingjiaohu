@@ -1,0 +1,17 @@
+node_modules/
+dist/
+build/
+client/dist/
+server/dist/
+*.log
+.env
+.env.local
+.DS_Store
+*.apk
+desktop/dist/
+android/.gradle/
+android/app/build/
+android/local.properties
+.idea/
+*.iml
+*.tsbuildinfo

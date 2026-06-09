@@ -1,0 +1,66 @@
+name: Build Desktop App
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install client deps
+        run: npm install --prefix client
+
+      - name: Build client
+        run: npm run build --prefix client
+        env:
+          VITE_SIGNALING_URL: ${{ vars.VITE_SIGNALING_URL || 'http://localhost:8765' }}
+
+      - name: Install desktop deps
+        run: npm install --prefix desktop
+
+      - name: Build Windows EXE
+        run: npm run build:win --prefix desktop
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: holographic-windows
+          path: |
+            desktop/dist/*.exe
+            desktop/dist/*.exe.blockmap
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install & build
+        run: |
+          npm install --prefix client
+          npm run build --prefix client
+          npm install --prefix desktop
+          npm run build:linux --prefix desktop
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: holographic-linux
+          path: desktop/dist/*
+
+  build-server-docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build signaling image
+        run: docker build -t holographic-signaling ./server

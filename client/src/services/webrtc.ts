@@ -13,6 +13,7 @@ export class WebRTCManager {
   private pendingCandidates = new Map<string, RTCIceCandidateInit[]>();
   private remoteStreams = new Map<string, RemoteStream>();
   private onRemoteStream?: (streams: Map<string, RemoteStream>) => void;
+  private deviceAlpha = new Map<string, boolean>();
   private iceServers: RTCIceServer[] = getCachedIceServers();
   private lowQualityMode = false;
 
@@ -45,6 +46,16 @@ export class WebRTCManager {
 
   setRemoteStreamCallback(cb: (streams: Map<string, RemoteStream>) => void): void {
     this.onRemoteStream = cb;
+  }
+
+  setDeviceAlpha(deviceId: string, hasAlpha: boolean): void {
+    this.deviceAlpha.set(deviceId, hasAlpha);
+    const key = `${deviceId}:camera`;
+    const existing = this.remoteStreams.get(key);
+    if (existing && existing.hasAlpha !== hasAlpha) {
+      this.remoteStreams.set(key, { ...existing, hasAlpha });
+      this.notifyStreams();
+    }
   }
 
   async startPublishing(streamTypes: StreamType[] = ['camera'], hasAlpha = false): Promise<MediaStream> {
@@ -152,7 +163,7 @@ export class WebRTCManager {
         deviceId: remoteId,
         streamType,
         stream,
-        hasAlpha: false,
+        hasAlpha: this.deviceAlpha.get(remoteId) ?? false,
       });
       this.notifyStreams();
     };

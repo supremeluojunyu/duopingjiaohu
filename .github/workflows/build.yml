@@ -5,6 +5,9 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
+env:
+  VITE_SIGNALING_URL: ${{ vars.VITE_SIGNALING_URL || 'http://124.220.4.69:9000' }}
+
 jobs:
   build-windows:
     runs-on: windows-latest
@@ -21,7 +24,7 @@ jobs:
       - name: Build client
         run: npm run build --prefix client
         env:
-          VITE_SIGNALING_URL: ${{ vars.VITE_SIGNALING_URL || 'http://localhost:8765' }}
+          VITE_SIGNALING_URL: ${{ env.VITE_SIGNALING_URL }}
 
       - name: Install desktop deps
         run: npm install --prefix desktop
@@ -35,6 +38,7 @@ jobs:
           path: |
             desktop/dist/*.exe
             desktop/dist/*.exe.blockmap
+          if-no-files-found: error
 
   build-linux:
     runs-on: ubuntu-latest
@@ -45,17 +49,27 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install & build
-        run: |
-          npm install --prefix client
-          npm run build --prefix client
-          npm install --prefix desktop
-          npm run build:linux --prefix desktop
+      - name: Install client deps
+        run: npm install --prefix client
+
+      - name: Build client
+        run: npm run build --prefix client
+        env:
+          VITE_SIGNALING_URL: ${{ env.VITE_SIGNALING_URL }}
+
+      - name: Install desktop deps
+        run: npm install --prefix desktop
+
+      - name: Build Linux AppImage & deb
+        run: npm run build:linux --prefix desktop
 
       - uses: actions/upload-artifact@v4
         with:
           name: holographic-linux
-          path: desktop/dist/*
+          path: |
+            desktop/dist/*.AppImage
+            desktop/dist/*.deb
+          if-no-files-found: error
 
   build-server-docker:
     runs-on: ubuntu-latest
@@ -81,19 +95,37 @@ jobs:
       - name: Build debug APK
         run: |
           cd android
-          chmod +x gradlew 2>/dev/null || true
-          if [ -f gradlew ]; then
-            ./gradlew assembleDebug --no-daemon
-          else
-            gradle assembleDebug --no-daemon
-          fi
-
-      - name: Publish APK manifest
-        run: bash scripts/publish-apk.sh debug "CI 自动构建"
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
 
       - uses: actions/upload-artifact@v4
         with:
           name: holographic-android
-          path: |
-            server/public/downloads/app-latest.apk
-            server/public/downloads/version.json
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+  release:
+    needs: [build-windows, build-linux]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: holographic-windows
+          path: release/windows
+      - uses: actions/download-artifact@v4
+        with:
+          name: holographic-linux
+          path: release/linux
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            release/windows/*
+            release/linux/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

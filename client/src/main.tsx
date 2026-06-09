@@ -28,7 +28,7 @@ function getInitialJoinForm() {
   return {
     serverUrl: params.get('server') ?? DEFAULT_SERVER,
     roomId: (params.get('room') ?? '').toUpperCase(),
-    name: '',
+    name: params.get('name') ?? '',
     type: (params.get('type') === 'mobile' ? 'mobile' : 'desktop') as 'mobile' | 'desktop',
     asAdmin: params.get('admin') === '1',
   };
@@ -37,6 +37,18 @@ function getInitialJoinForm() {
 function isDownloadPage() {
   const params = new URLSearchParams(window.location.search);
   return params.get('page') === 'download';
+}
+
+function isHologramMode() {
+  return new URLSearchParams(window.location.search).get('hologram') === '1';
+}
+
+function getInitialViewMode(): '3d' | 'grid' | 'stereo' | 'relief' | 'pointcloud' {
+  const view = new URLSearchParams(window.location.search).get('view');
+  if (view === '3d' || view === 'grid' || view === 'stereo' || view === 'relief' || view === 'pointcloud') {
+    return view;
+  }
+  return isHologramMode() ? 'stereo' : '3d';
 }
 
 function App() {
@@ -51,7 +63,8 @@ function App() {
   const [subscribed, setSubscribed] = useState<Set<string>>(new Set());
   const [isPublishing, setIsPublishing] = useState(false);
   const [segmentationEnabled, setSegmentationEnabled] = useState(false);
-  const [viewMode, setViewMode] = useState<'3d' | 'grid' | 'stereo' | 'relief' | 'pointcloud'>('3d');
+  const [viewMode, setViewMode] = useState<'3d' | 'grid' | 'stereo' | 'relief' | 'pointcloud'>(getInitialViewMode);
+  const [isHologram] = useState(isHologramMode);
   const [angleGuide, setAngleGuide] = useState<AngleGuide | null>(null);
   const [signalConnected, setSignalConnected] = useState(true);
   const [backgroundEnabled, setBackgroundEnabled] = useState(false);
@@ -83,6 +96,7 @@ function App() {
   const pendingIceRef = useRef<RTCIceServer[] | null>(null);
   const sceneContainerRef = useRef<HTMLDivElement>(null);
   const localVideoRef = useRef<HTMLVideoElement>(null);
+  const autoJoinRef = useRef(false);
 
   const getPeers = useCallback(
     () => webrtcRef.current?.getPeerConnections() ?? null,
@@ -91,6 +105,12 @@ function App() {
   const streamStats = useWebRTCStats(getPeers);
 
   useScene3D(sceneContainerRef, { mappings, remoteStreams, viewMode, backgroundStream });
+
+  useEffect(() => {
+    for (const d of devices) {
+      webrtcRef.current?.setDeviceAlpha(d.id, d.hasAlpha);
+    }
+  }, [devices]);
 
   // 网络质量自适应降质
   useEffect(() => {
@@ -125,6 +145,7 @@ function App() {
       case 'peer_joined': {
         const d = msg.payload.device as DeviceInfo;
         setDevices((prev) => [...prev.filter((x) => x.id !== d.id), d]);
+        webrtcRef.current?.setDeviceAlpha(d.id, d.hasAlpha);
         break;
       }
       case 'peer_left': {
@@ -202,19 +223,20 @@ function App() {
     return () => window.removeEventListener('deviceorientation', onOrientation);
   }, [device]);
 
-  const joinRoom = async () => {
-    const name = joinForm.name.trim() || (joinForm.type === 'mobile' ? '手机' : '电脑');
-    const signaling = new SignalingClient(joinForm.serverUrl);
+  const joinRoom = async (overrides?: Partial<typeof joinForm>) => {
+    const form = { ...joinForm, ...overrides };
+    const name = form.name.trim() || (form.type === 'mobile' ? '手机' : isHologram ? '全息显示端' : '电脑');
+    const signaling = new SignalingClient(form.serverUrl);
     signaling.setLatencyCallback(setLatency);
     signaling.setConnectionCallback(setSignalConnected);
     signaling.onMessage(handleSignalingMessage);
 
     const joinPayload = {
-      roomId: joinForm.roomId.trim() || undefined,
+      roomId: form.roomId.trim() || undefined,
       device: {
         name,
-        type: joinForm.type,
-        role: joinForm.asAdmin ? 'admin' : 'user',
+        type: form.type,
+        role: form.asAdmin ? 'admin' : 'user',
         streamTypes: ['camera'],
         hasAlpha: segmentationEnabled,
       },
@@ -224,11 +246,10 @@ function App() {
     await signaling.connect();
     signalingRef.current = signaling;
 
-    const iceServers = await fetchIceServers(joinForm.serverUrl);
+    const iceServers = await fetchIceServers(form.serverUrl);
 
     signaling.send({ type: 'join', payload: joinPayload });
 
-    // ICE 配置在 joined 后应用到 WebRTC
     pendingIceRef.current = iceServers;
   };
 
@@ -253,14 +274,14 @@ function App() {
     setIsPublishing(false);
   };
 
-  const handleSubscribe = async (deviceId: string) => {
+  const handleSubscribe = useCallback(async (deviceId: string) => {
     await webrtcRef.current?.subscribe(deviceId, 'camera');
     setSubscribed((prev) => new Set(prev).add(deviceId));
     signalingRef.current?.send({
       type: 'subscribe',
       payload: { publisherId: deviceId, streamType: 'camera' },
     });
-  };
+  }, []);
 
   const handleUnsubscribe = (deviceId: string) => {
     webrtcRef.current?.unsubscribe(deviceId, 'camera');
@@ -270,6 +291,27 @@ function App() {
       return next;
     });
   };
+
+  // 全息显示端：有房间号时自动加入
+  useEffect(() => {
+    if (!isHologram || connected || autoJoinRef.current || !joinForm.roomId) return;
+    autoJoinRef.current = true;
+    void joinRoom({
+      name: joinForm.name || '全息显示端',
+      type: 'desktop',
+      asAdmin: false,
+    });
+  }, [isHologram, connected, joinForm.roomId]);
+
+  // 全息显示端：自动订阅所有在线设备
+  useEffect(() => {
+    if (!connected || !isHologram || !device) return;
+    for (const d of devices) {
+      if (d.id !== device.id && d.online && !subscribed.has(d.id)) {
+        void handleSubscribe(d.id);
+      }
+    }
+  }, [connected, isHologram, devices, device, subscribed, handleSubscribe]);
 
   const handleMappingChange = (mapping: StreamMapping) => {
     signalingRef.current?.send({
@@ -317,8 +359,16 @@ function App() {
   };
 
   const openHologramOutput = () => {
-    const url = window.location.href;
-    window.open(url + (url.includes('?') ? '&' : '?') + 'hologram=1', '_blank', 'fullscreen=yes');
+    if (!roomId) return;
+    const params = new URLSearchParams({
+      hologram: '1',
+      room: roomId,
+      server: joinForm.serverUrl,
+      view: viewMode,
+      type: 'desktop',
+      name: '全息显示端',
+    });
+    window.open(`${window.location.pathname}?${params.toString()}`, '_blank', 'fullscreen=yes');
   };
 
   const toggleBackgroundFusion = async () => {
@@ -403,7 +453,7 @@ function App() {
             开启人像抠图
           </label>
 
-          <button className="btn-primary" onClick={joinRoom}>进入房间</button>
+          <button className="btn-primary" onClick={() => void joinRoom()}>进入房间</button>
 
           <button className="btn-link" type="button" onClick={goToDownloadPage}>
             下载 Android 客户端
@@ -414,6 +464,32 @@ function App() {
   }
 
   const isAdmin = device?.role === 'admin';
+
+  if (isHologram && connected) {
+    return (
+      <div className="hologram-layout">
+        <div className="hologram-status">
+          <span>全息显示 · 房间 {roomId}</span>
+          <span>{viewMode.toUpperCase()} · {remoteStreams.size} 路画面</span>
+          <span className={signalConnected ? '' : 'offline'}>{signalConnected ? `${latency}ms` : '重连中'}</span>
+        </div>
+        <main className="viewport hologram-viewport">
+          {viewMode === 'grid' ? (
+            <div className="grid-view">
+              {[...remoteStreams.values()].map((rs) => (
+                <GridVideo key={`${rs.deviceId}:${rs.streamType}`} stream={rs.stream} label={rs.deviceId.slice(0, 8)} />
+              ))}
+              {remoteStreams.size === 0 && (
+                <div className="empty-viewport">等待采集端投屏并自动订阅…</div>
+              )}
+            </div>
+          ) : (
+            <div ref={sceneContainerRef} className="scene-container" />
+          )}
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="app-layout">

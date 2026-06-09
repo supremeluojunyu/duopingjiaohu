@@ -23,7 +23,7 @@ export function AdminPanel({
   presets,
   onLoadPreset,
 }: AdminPanelProps) {
-  const mobileDevices = devices.filter((d) => d.type === 'mobile' || d.online);
+  const mobileDevices = devices.filter((d) => d.type === 'mobile' && d.online);
 
   return (
     <div className="admin-panel">

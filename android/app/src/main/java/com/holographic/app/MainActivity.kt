@@ -50,7 +50,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        eglBase = EglBase.create()
         sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
         rotationSensor = sensorManager?.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
 
@@ -167,6 +166,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                     binding.statusBar.visibility = View.VISIBLE
                     binding.joinPanel.visibility = View.GONE
                     binding.controlBar.visibility = View.VISIBLE
+                    binding.tvEmptyHint.visibility = View.VISIBLE
+                    binding.localPreview.visibility = View.GONE
                 }
             } catch (e: Exception) {
                 runOnUiThread {
@@ -186,9 +187,21 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             webrtcManager?.stopPublishing()
             isPublishing = false
             binding.btnStartCast.text = "开始投屏"
+            binding.localPreview.visibility = View.GONE
+            binding.tvEmptyHint.visibility = View.VISIBLE
             sensorManager?.unregisterListener(this)
         } else {
+            if (eglBase == null) {
+                try {
+                    eglBase = EglBase.create()
+                } catch (e: Exception) {
+                    Toast.makeText(this, "图形初始化失败: ${e.message}", Toast.LENGTH_LONG).show()
+                    return
+                }
+            }
             val egl = eglBase ?: return
+            binding.localPreview.visibility = View.VISIBLE
+            binding.tvEmptyHint.visibility = View.GONE
             webrtcManager = WebRTCManager(
                 context = this,
                 signaling = signalingClient!!,
@@ -197,7 +210,12 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                 localDeviceId = localDeviceId!!,
                 eglBase = egl
             )
-            webrtcManager!!.startPublishing(segmentationEnabled)
+            if (!webrtcManager!!.startPublishing(segmentationEnabled)) {
+                binding.localPreview.visibility = View.GONE
+                binding.tvEmptyHint.visibility = View.VISIBLE
+                Toast.makeText(this, "无法打开摄像头，请检查权限", Toast.LENGTH_LONG).show()
+                return
+            }
             isPublishing = true
             binding.btnStartCast.text = "停止投屏"
             binding.remotePreview.visibility = View.VISIBLE

@@ -120,6 +120,42 @@ button.active { background: var(--primary); border-color: var(--primary); }
 }
 .btn-link:hover { background: transparent; color: var(--accent); }
 
+/* Hologram Display Layout */
+.hologram-layout {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: #000;
+}
+
+.hologram-status {
+  display: flex;
+  justify-content: center;
+  gap: 1.5rem;
+  padding: 0.35rem 1rem;
+  background: rgba(0, 0, 0, 0.6);
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 10;
+}
+
+.hologram-viewport {
+  flex: 1;
+  width: 100%;
+  height: 100vh;
+}
+
+.hologram-viewport .scene-container,
+.hologram-viewport .grid-view {
+  height: 100vh;
+}
+
+.hologram-status .offline { color: #fca5a5; }
+
 /* APK Download Page */
 .download-screen {
   display: flex;
@@ -239,7 +275,19 @@ button.active { background: var(--primary); border-color: var(--primary); }
   line-height: 1.4;
 }
 
-.download-hint code {
+.desktop-download-block { margin-top: 0.5rem; }
+.desktop-download-title {
+  font-size: 1rem;
+  color: var(--text);
+  margin-bottom: 0.5rem;
+}
+.desktop-release-link {
+  display: inline-block;
+  text-align: center;
+  text-decoration: none;
+  margin-top: 0.5rem;
+}
+
   background: var(--surface2);
   padding: 0.1rem 0.35rem;
   border-radius: 4px;

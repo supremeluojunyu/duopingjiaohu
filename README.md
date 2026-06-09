@@ -113,6 +113,8 @@ npm run benchmark --prefix server -- BENCH01 10
 
 详见 [docs/DEMO.md](docs/DEMO.md) — 含 5 分钟演示脚本与录制建议。
 
+**用户操作说明**详见 [docs/USER_MANUAL.md](docs/USER_MANUAL.md)。
+
 ## 构建 Windows EXE
 
 ```bash
@@ -133,9 +135,11 @@ cd android
 
 ## 文档
 
+- **[使用说明书](docs/USER_MANUAL.md)** — 面向用户的完整操作指南（Web / Android / APK 下载 / 公网访问）
 - [需求规格说明书 v1.1](docs/REQUIREMENTS.md)
 - [信令 API](docs/API.md)
 - [部署指南](docs/DEPLOYMENT.md)
+- [演示指南](docs/DEMO.md)
 
 ## 技术栈
 

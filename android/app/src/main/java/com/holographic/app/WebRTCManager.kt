@@ -38,8 +38,8 @@ class WebRTCManager(
         IceServer.builder("stun:stun1.l.google.com:19302").createIceServer()
     )
 
-    fun startPublishing(enableSegmentation: Boolean) {
-        if (isPublishing) return
+    fun startPublishing(enableSegmentation: Boolean): Boolean {
+        if (isPublishing) return true
         initializeFactory()
 
         localRenderer.init(eglBase.eglBaseContext, null)
@@ -52,7 +52,7 @@ class WebRTCManager(
 
         val capturer = createCameraCapturer() ?: run {
             Log.e(TAG, "无法打开摄像头")
-            return
+            return false
         }
         videoCapturer = capturer
 
@@ -79,6 +79,7 @@ class WebRTCManager(
 
         isPublishing = true
         Log.i(TAG, "推流已开始")
+        return true
     }
 
     fun handleSignalingMessage(msg: SignalingClient.SignalingMessage) {

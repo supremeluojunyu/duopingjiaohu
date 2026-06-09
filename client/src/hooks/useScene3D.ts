@@ -9,6 +9,7 @@ import {
   updatePointCloud,
   updateReliefGeometry,
 } from '../utils/sceneEffects';
+import { createVideoMaterial } from '../utils/chromaKeyMaterial';
 
 interface Scene3DProps {
   mappings: StreamMapping[];
@@ -209,7 +210,7 @@ export function useScene3D(
       if (renderEffect === 'relief') {
         const geo = createReliefGeometry(1.6, 0.9);
         obj.reliefGeo = geo;
-        const mat = new THREE.MeshStandardMaterial({ map: tex, transparent: true, side: THREE.DoubleSide, roughness: 0.6 });
+        const mat = createVideoMaterial(tex, remote.hasAlpha, 'relief');
         obj.mesh = new THREE.Mesh(geo, mat);
         displayObject = obj.mesh;
       } else if (renderEffect === 'pointcloud') {
@@ -219,7 +220,7 @@ export function useScene3D(
         obj.points = points;
         displayObject = points;
       } else {
-        const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, side: THREE.DoubleSide });
+        const mat = createVideoMaterial(tex, remote.hasAlpha, 'plane');
         obj.mesh = new THREE.Mesh(new THREE.PlaneGeometry(1.6, 0.9), mat);
         displayObject = obj.mesh;
       }

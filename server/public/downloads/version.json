@@ -1,10 +1,10 @@
 {
-  "versionName": "0.1.0",
-  "versionCode": 1,
-  "fileName": "",
-  "fileSize": 0,
-  "sha256": "",
-  "updatedAt": "2026-06-09T00:00:00.000Z",
-  "available": false,
-  "releaseNotes": "请运行 scripts/publish-apk.sh 发布 Android 安装包"
+  "versionName": "0.1.2",
+  "versionCode": 3,
+  "fileName": "holographic-0.1.2.apk",
+  "fileSize": 98729014,
+  "sha256": "b3592af030f64e11f395370be84863544efa320b95f9f06e31c9d2d92a2b21d9",
+  "updatedAt": "2026-06-09T23:11:52.000Z",
+  "available": true,
+  "releaseNotes": "修复绿幕抠图，配合显示端色键"
 }

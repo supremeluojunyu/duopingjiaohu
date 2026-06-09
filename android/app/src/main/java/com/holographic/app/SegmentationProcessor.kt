@@ -60,7 +60,7 @@ class SegmentationProcessor(private val context: Context) : VideoProcessor {
     override fun onCapturerStarted(success: Boolean) {}
     override fun onCapturerStopped() {}
 
-    override fun onFrameCaptured(frame: VideoFrame, parameters: VideoProcessor.FrameAdaptationParameters) {
+    override fun onFrameCaptured(frame: VideoFrame) {
         val targetSink = sink
         if (targetSink == null) return
 
@@ -98,7 +98,6 @@ class SegmentationProcessor(private val context: Context) : VideoProcessor {
         mpImage.close()
 
         applyCategoryMask(bitmap, result, w, h)
-        result.close()
 
         val outI420 = JavaI420Buffer.allocate(w, h)
         bitmapToYuv(bitmap, outI420)
@@ -122,7 +121,7 @@ class SegmentationProcessor(private val context: Context) : VideoProcessor {
                 val my = y * mh / h
                 val maskVal = buffer.get(my * mw + mx).toInt() and 0xFF
                 if (maskVal == 0) {
-                    pixels[y * w + x] = Color.TRANSPARENT
+                    pixels[y * w + x] = Color.GREEN
                 }
             }
         }
@@ -173,8 +172,8 @@ class SegmentationProcessor(private val context: Context) : VideoProcessor {
                 i420.dataY.put(row * i420.strideY + col, y.coerceIn(0, 255).toByte())
 
                 if (row % 2 == 0 && col % 2 == 0) {
-                    val u = if (a < 128) 128 else ((-38 * r - 74 * g + 112 * b + 128) shr 8) + 128
-                    val v = if (a < 128) 128 else ((112 * r - 94 * g - 18 * b + 128) shr 8) + 128
+                    val u = if (a < 128) 44 else ((-38 * r - 74 * g + 112 * b + 128) shr 8) + 128
+                    val v = if (a < 128) 21 else ((112 * r - 94 * g - 18 * b + 128) shr 8) + 128
                     i420.dataU.put((row / 2) * i420.strideU + col / 2, u.coerceIn(0, 255).toByte())
                     i420.dataV.put((row / 2) * i420.strideV + col / 2, v.coerceIn(0, 255).toByte())
                 }

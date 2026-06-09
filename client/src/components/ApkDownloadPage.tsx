@@ -131,6 +131,21 @@ export function ApkDownloadPage({ serverUrl, onBack }: ApkDownloadPageProps) {
           )}
         </div>
 
+        <div className="download-info desktop-download-block">
+          <h2 className="desktop-download-title">Windows / Linux 桌面版</h2>
+          <p className="release-notes">
+            EXE 与 AppImage 由 GitHub Actions 构建，在 Release 页面下载。
+          </p>
+          <a
+            className="btn-primary desktop-release-link"
+            href="https://github.com/supremeluojunyu/duopingjiaohu/releases/latest"
+            target="_blank"
+            rel="noreferrer"
+          >
+            打开 GitHub 下载 EXE / AppImage
+          </a>
+        </div>
+
         <p className="download-hint">
           管理员发布新版本：在服务器运行 <code>bash scripts/publish-apk.sh release</code>
         </p>

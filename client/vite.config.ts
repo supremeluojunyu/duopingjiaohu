@@ -5,6 +5,8 @@ import basicSsl from '@vitejs/plugin-basic-ssl';
 const useHttps = process.env.VITE_HTTPS === 'true' || process.env.VITE_HTTPS === '1';
 
 export default defineConfig({
+  // Electron loadFile uses file:// — absolute /assets paths fail and show a blank window.
+  base: './',
   plugins: [react(), ...(useHttps ? [basicSsl()] : [])],
   server: {
     port: 8080,

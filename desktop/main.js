@@ -3,7 +3,7 @@ const path = require('path');
 const fs = require('fs');
 
 const isDev = !app.isPackaged;
-const SIGNALING_URL = process.env.HOLO_SIGNALING_URL ?? 'http://localhost:8765';
+const SIGNALING_URL = process.env.HOLO_SIGNALING_URL ?? '';
 
 function getClientIndexPath() {
   if (isDev) {
@@ -34,15 +34,19 @@ function createWindow(hologramMode = false) {
   });
 
   const indexPath = getClientIndexPath();
-  const query = { server: SIGNALING_URL, type: 'desktop' };
+  const query = { type: 'desktop' };
   if (hologramMode) query.hologram = '1';
+  if (SIGNALING_URL) query.server = SIGNALING_URL;
 
   if (indexPath && fs.existsSync(indexPath)) {
-    win.loadFile(indexPath, { query });
+    win.loadFile(indexPath, { query }).catch((err) => {
+      const { dialog } = require('electron');
+      dialog.showErrorBox('加载失败', `无法打开客户端页面：${err.message}`);
+    });
   } else {
     const url = new URL(process.env.HOLO_DEV_URL ?? 'http://localhost:5173');
-    url.searchParams.set('server', SIGNALING_URL);
     url.searchParams.set('type', 'desktop');
+    if (SIGNALING_URL) url.searchParams.set('server', SIGNALING_URL);
     if (hologramMode) url.searchParams.set('hologram', '1');
     win.loadURL(url.toString());
   }
@@ -78,7 +82,9 @@ function buildMenu() {
               type: 'info',
               title: '全息投影系统',
               message: '全息投影 · 多屏互动系统 v0.1.0',
-              detail: `信令服务器: ${SIGNALING_URL}`,
+              detail: SIGNALING_URL
+                ? `信令服务器: ${SIGNALING_URL}`
+                : '信令服务器: 使用客户端内置默认地址',
             });
           },
         },

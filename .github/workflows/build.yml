@@ -34,6 +34,8 @@ jobs:
 
       - name: Build Windows EXE
         run: npm run build:win --prefix desktop
+        env:
+          VITE_SIGNALING_URL: ${{ env.VITE_SIGNALING_URL }}
 
       - name: List dist output
         run: dir desktop\dist
@@ -74,6 +76,8 @@ jobs:
 
       - name: Build Linux AppImage
         run: npm run build:linux --prefix desktop
+        env:
+          VITE_SIGNALING_URL: ${{ env.VITE_SIGNALING_URL }}
 
       - name: List dist output
         run: ls -lah desktop/dist/

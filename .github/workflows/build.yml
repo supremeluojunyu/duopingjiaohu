@@ -29,6 +29,9 @@ jobs:
       - name: Install desktop deps
         run: npm install --prefix desktop
 
+      - name: Generate desktop icons
+        run: python scripts/generate-desktop-icons.py
+
       - name: Build Windows EXE
         run: npm run build:win --prefix desktop
 
@@ -66,7 +69,10 @@ jobs:
       - name: Install desktop deps
         run: npm install --prefix desktop
 
-      - name: Build Linux AppImage & deb
+      - name: Generate desktop icons
+        run: python3 scripts/generate-desktop-icons.py
+
+      - name: Build Linux AppImage
         run: npm run build:linux --prefix desktop
 
       - name: List dist output
@@ -75,9 +81,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: holographic-linux
-          path: |
-            desktop/dist/*.AppImage
-            desktop/dist/*.deb
+          path: desktop/dist/*.AppImage
           if-no-files-found: error
 
   build-server-docker:
@@ -99,6 +103,8 @@ jobs:
           java-version: '17'
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+      - name: Install Android SDK platform 35
+        run: sdkmanager "platforms;android-35"
       - name: Build debug APK
         run: |
           cd android

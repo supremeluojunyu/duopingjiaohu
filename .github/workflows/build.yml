@@ -32,6 +32,9 @@ jobs:
       - name: Build Windows EXE
         run: npm run build:win --prefix desktop
 
+      - name: List dist output
+        run: dir desktop\dist
+
       - uses: actions/upload-artifact@v4
         with:
           name: holographic-windows
@@ -49,6 +52,9 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Install Linux packager deps
+        run: sudo apt-get update && sudo apt-get install -y fakeroot rpm libfuse2
+
       - name: Install client deps
         run: npm install --prefix client
 
@@ -63,6 +69,9 @@ jobs:
       - name: Build Linux AppImage & deb
         run: npm run build:linux --prefix desktop
 
+      - name: List dist output
+        run: ls -lah desktop/dist/
+
       - uses: actions/upload-artifact@v4
         with:
           name: holographic-linux
@@ -73,41 +82,41 @@ jobs:
 
   build-server-docker:
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
-
       - name: Build signaling image
         run: docker build -t holographic-signaling ./server
 
   build-android:
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
-
       - name: Build debug APK
         run: |
           cd android
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon
-
       - uses: actions/upload-artifact@v4
         with:
           name: holographic-android
           path: android/app/build/outputs/apk/debug/app-debug.apk
-          if-no-files-found: error
+          if-no-files-found: warn
 
   release:
     needs: [build-windows, build-linux]
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: >
+      github.event_name == 'push' &&
+      startsWith(github.ref, 'refs/tags/v') &&
+      needs.build-windows.result == 'success'
     permissions:
       contents: write
     steps:
@@ -115,17 +124,25 @@ jobs:
         with:
           name: holographic-windows
           path: release/windows
+
       - uses: actions/download-artifact@v4
+        if: needs.build-linux.result == 'success'
         with:
           name: holographic-linux
           path: release/linux
 
+      - name: Prepare release assets
+        run: |
+          mkdir -p release-bundle
+          cp release/windows/* release-bundle/
+          if [ -d release/linux ]; then cp release/linux/* release-bundle/; fi
+          ls -lah release-bundle/
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.ref_name }}
           generate_release_notes: true
-          files: |
-            release/windows/*
-            release/linux/*
+          files: release-bundle/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

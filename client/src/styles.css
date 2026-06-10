@@ -475,6 +475,13 @@ button.active { background: var(--primary); border-color: var(--primary); }
 }
 .badge.admin { background: var(--accent); color: white; }
 .badge.alpha { background: var(--success); color: white; }
+.badge.publishing { background: #2563eb; color: white; }
+.badge.waiting { background: #4b5563; color: #e5e7eb; }
+.auto-recv-label {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
 .toggle { font-size: 0.8rem; display: flex; align-items: center; gap: 0.3rem; cursor: pointer; }
 
 /* Admin Panel */

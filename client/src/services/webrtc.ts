@@ -114,6 +114,7 @@ export class WebRTCManager {
     const pc = this.createPeerConnection(publisherId, streamType);
     this.peers.set(key, pc);
     this.attachLocalTracks(pc);
+    this.ensureRecvTransceivers(pc);
 
     this.makingOffer.add(key);
     try {
@@ -126,6 +127,48 @@ export class WebRTCManager {
       });
     } finally {
       this.makingOffer.delete(key);
+    }
+  }
+
+  /** 手机端开始投屏后会主动发 offer，电脑端只标记等待 */
+  noteAwaitingPublisher(publisherId: string, streamType: StreamType = 'camera'): void {
+    if (publisherId === this.localDeviceId) return;
+    const key = `${publisherId}:${streamType}`;
+    if (!this.peers.has(key)) {
+      const pc = this.createPeerConnection(publisherId, streamType);
+      this.peers.set(key, pc);
+      this.ensureRecvTransceivers(pc);
+    }
+  }
+
+  private ensureRecvTransceivers(pc: RTCPeerConnection): void {
+    if (this.localStream) return;
+    const transceivers = pc.getTransceivers();
+    const hasVideoRecv = transceivers.some(
+      (t) =>
+        t.direction === 'recvonly' ||
+        t.direction === 'sendrecv' ||
+        t.receiver.track?.kind === 'video'
+    );
+    const hasAudioRecv = transceivers.some(
+      (t) =>
+        t.direction === 'recvonly' ||
+        t.direction === 'sendrecv' ||
+        t.receiver.track?.kind === 'audio'
+    );
+    if (!hasVideoRecv) {
+      try {
+        pc.addTransceiver('video', { direction: 'recvonly' });
+      } catch {
+        /* ignore */
+      }
+    }
+    if (!hasAudioRecv) {
+      try {
+        pc.addTransceiver('audio', { direction: 'recvonly' });
+      } catch {
+        /* ignore */
+      }
     }
   }
 
@@ -240,9 +283,11 @@ export class WebRTCManager {
         if (device.id === this.localDeviceId) break;
         if (this.localStream) {
           await this.offerStreamToPeer(device.id, streamType);
-        } else {
-          // 仅由电脑端主动订阅手机端，避免双向 offer 冲突
+        } else if (device.type === 'desktop') {
           await this.subscribe(device.id, streamType);
+        } else {
+          // 手机作为采集端：等对方点「开始投屏」后主动发 offer，电脑只应答
+          this.noteAwaitingPublisher(device.id, streamType);
         }
         break;
       }
@@ -255,6 +300,7 @@ export class WebRTCManager {
           pc = this.createPeerConnection(msg.from, streamType);
           this.peers.set(key, pc);
           this.attachLocalTracks(pc);
+          this.ensureRecvTransceivers(pc);
         }
 
         const sdp = msg.payload.sdp as RTCSessionDescriptionInit;
@@ -311,10 +357,8 @@ export class WebRTCManager {
       case 'publish_started': {
         const publisherId = msg.payload.deviceId as string;
         if (publisherId === this.localDeviceId) break;
-        const key = `${publisherId}:${streamType}`;
-        if (!this.peers.has(key)) {
-          await this.subscribe(publisherId, streamType);
-        }
+        // 手机将主动发 offer，电脑预建接收用 PeerConnection
+        this.noteAwaitingPublisher(publisherId, streamType);
         break;
       }
 

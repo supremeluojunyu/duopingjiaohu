@@ -34,11 +34,13 @@ class WebRTCManager(
     private var segmentationProcessor: SegmentationProcessor? = null
     private var receiveReady = false
     private val knownPeerIds = mutableSetOf<String>()
+    private val makingOffer = mutableSetOf<String>()
 
-    private val iceServers = listOf(
-        IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
-        IceServer.builder("stun:stun1.l.google.com:19302").createIceServer()
-    )
+    private var iceServers: List<IceServer> = IceConfigFetcher.fetch(SignalingConfig.SERVER_URL)
+
+    fun setIceServers(servers: List<IceServer>) {
+        if (servers.isNotEmpty()) iceServers = servers
+    }
 
     /** 加入房间后初始化，用于接收远端 offer */
     fun ensureReceiveReady() {
@@ -96,7 +98,9 @@ class WebRTCManager(
         localAudioTrack = factory!!.createAudioTrack("audio0", audioSource!!)
 
         isPublishing = true
-        renegotiateAllPeers()
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            renegotiateAllPeers()
+        }, 300)
         Log.i(TAG, "推流已开始")
         return true
     }
@@ -245,8 +249,10 @@ class WebRTCManager(
     private fun offerStreamToPeer(remoteId: String) {
         if (!isPublishing || remoteId == localDeviceId) return
         ensureReceiveReady()
+        val key = peerKey(remoteId)
         val pc = getOrCreatePeerConnection(remoteId)
         attachLocalTracks(pc)
+        makingOffer.add(key)
 
         pc.createOffer(object : SdpObserver {
             override fun onCreateSuccess(offer: SessionDescription?) {
@@ -254,21 +260,27 @@ class WebRTCManager(
                 pc.setLocalDescription(object : SdpObserver {
                     override fun onCreateSuccess(desc: SessionDescription?) {}
                     override fun onSetSuccess() {
+                        makingOffer.remove(key)
                         sendSdp("offer", offer, remoteId)
                     }
                     override fun onCreateFailure(error: String?) {
+                        makingOffer.remove(key)
                         Log.e(TAG, "setLocalDescription(re-offer) 失败: $error")
                     }
                     override fun onSetFailure(error: String?) {
+                        makingOffer.remove(key)
                         Log.e(TAG, "setLocalDescription(re-offer) 失败: $error")
                     }
                 }, offer)
             }
             override fun onSetSuccess() {}
             override fun onCreateFailure(error: String?) {
+                makingOffer.remove(key)
                 Log.e(TAG, "createOffer(renegotiate) 失败: $error")
             }
-            override fun onSetFailure(error: String?) {}
+            override fun onSetFailure(error: String?) {
+                makingOffer.remove(key)
+            }
         }, MediaConstraints())
     }
 
@@ -345,41 +357,62 @@ class WebRTCManager(
             sdpJson.get("sdp").asString
         )
 
+        val key = peerKey(from)
         val pc = getOrCreatePeerConnection(from)
         attachLocalTracks(pc)
-        pc.setRemoteDescription(object : SdpObserver {
-            override fun onCreateSuccess(desc: SessionDescription?) {}
-            override fun onSetSuccess() {
-                drainPendingIce(from)
-                attachLocalTracks(pc)
-                pc.createAnswer(object : SdpObserver {
-                    override fun onCreateSuccess(answer: SessionDescription?) {
-                        answer ?: return
-                        pc.setLocalDescription(object : SdpObserver {
-                            override fun onCreateSuccess(desc: SessionDescription?) {}
-                            override fun onSetSuccess() {
-                                sendSdp("answer", answer, from)
-                            }
-                            override fun onCreateFailure(error: String?) {
-                                Log.e(TAG, "setLocalDescription 失败: $error")
-                            }
-                            override fun onSetFailure(error: String?) {
-                                Log.e(TAG, "setLocalDescription 失败: $error")
-                            }
-                        }, answer)
-                    }
-                    override fun onSetSuccess() {}
-                    override fun onCreateFailure(error: String?) {
-                        Log.e(TAG, "createAnswer 失败: $error")
-                    }
-                    override fun onSetFailure(error: String?) {}
-                }, MediaConstraints())
-            }
-            override fun onCreateFailure(error: String?) {}
-            override fun onSetFailure(error: String?) {
-                Log.e(TAG, "setRemoteDescription 失败: $error")
-            }
-        }, sdp)
+
+        fun answerOffer() {
+            pc.setRemoteDescription(object : SdpObserver {
+                override fun onCreateSuccess(desc: SessionDescription?) {}
+                override fun onSetSuccess() {
+                    makingOffer.remove(key)
+                    drainPendingIce(from)
+                    attachLocalTracks(pc)
+                    pc.createAnswer(object : SdpObserver {
+                        override fun onCreateSuccess(answer: SessionDescription?) {
+                            answer ?: return
+                            pc.setLocalDescription(object : SdpObserver {
+                                override fun onCreateSuccess(desc: SessionDescription?) {}
+                                override fun onSetSuccess() {
+                                    sendSdp("answer", answer, from)
+                                }
+                                override fun onCreateFailure(error: String?) {
+                                    Log.e(TAG, "setLocalDescription 失败: $error")
+                                }
+                                override fun onSetFailure(error: String?) {
+                                    Log.e(TAG, "setLocalDescription 失败: $error")
+                                }
+                            }, answer)
+                        }
+                        override fun onSetSuccess() {}
+                        override fun onCreateFailure(error: String?) {
+                            Log.e(TAG, "createAnswer 失败: $error")
+                        }
+                        override fun onSetFailure(error: String?) {}
+                    }, MediaConstraints())
+                }
+                override fun onCreateFailure(error: String?) {}
+                override fun onSetFailure(error: String?) {
+                    Log.e(TAG, "setRemoteDescription 失败: $error")
+                }
+            }, sdp)
+        }
+
+        val needRollback = makingOffer.contains(key) ||
+            pc.signalingState() != PeerConnection.SignalingState.STABLE
+        if (needRollback) {
+            pc.setLocalDescription(object : SdpObserver {
+                override fun onCreateSuccess(desc: SessionDescription?) {}
+                override fun onSetSuccess() { answerOffer() }
+                override fun onCreateFailure(error: String?) { answerOffer() }
+                override fun onSetFailure(error: String?) {
+                    Log.e(TAG, "rollback 失败: $error")
+                    answerOffer()
+                }
+            }, SessionDescription(SessionDescription.Type.ROLLBACK, ""))
+        } else {
+            answerOffer()
+        }
     }
 
     private fun handleAnswer(msg: SignalingClient.SignalingMessage) {

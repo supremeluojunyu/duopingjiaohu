@@ -248,6 +248,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                     el.asJsonObject.get("id")?.asString?.let { knownDeviceIds.add(it) }
                 }
                 ensureWebRtcManager()
+                webrtcManager?.setIceServers(IceConfigFetcher.fetch(SignalingConfig.SERVER_URL))
                 webrtcManager?.setKnownPeerIds(knownDeviceIds)
             }
             "peer_joined" -> {

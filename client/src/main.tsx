@@ -62,6 +62,7 @@ function App() {
   const [remoteStreams, setRemoteStreams] = useState<Map<string, RemoteStream>>(new Map());
   const [latency, setLatency] = useState(0);
   const [subscribed, setSubscribed] = useState<Set<string>>(new Set());
+  const [publishingDevices, setPublishingDevices] = useState<Set<string>>(new Set());
   const [isPublishing, setIsPublishing] = useState(false);
   const [segmentationEnabled, setSegmentationEnabled] = useState(false);
   const [viewMode, setViewMode] = useState<'3d' | 'grid' | 'stereo' | 'relief' | 'pointcloud'>(getInitialViewMode);
@@ -159,6 +160,11 @@ function App() {
           next.delete(id);
           return next;
         });
+        setPublishingDevices((prev) => {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
         break;
       }
       case 'mapping_sync': {
@@ -197,10 +203,13 @@ function App() {
       }
       case 'publish_started': {
         const publisherId = msg.payload.deviceId as string;
+        setPublishingDevices((prev) => new Set(prev).add(publisherId));
+        setSubscribed((prev) => new Set(prev).add(publisherId));
         webrtcRef.current?.setDeviceAlpha(
           publisherId,
           Boolean(msg.payload.hasAlpha)
         );
+        webrtcRef.current?.noteAwaitingPublisher(publisherId, 'camera');
         break;
       }
       case 'scene_save': {
@@ -305,13 +314,18 @@ function App() {
   };
 
   const handleSubscribe = useCallback(async (deviceId: string) => {
-    await webrtcRef.current?.subscribe(deviceId, 'camera');
+    const target = devices.find((d) => d.id === deviceId);
     setSubscribed((prev) => new Set(prev).add(deviceId));
+    if (target?.type === 'mobile') {
+      webrtcRef.current?.noteAwaitingPublisher(deviceId, 'camera');
+      return;
+    }
+    await webrtcRef.current?.subscribe(deviceId, 'camera');
     signalingRef.current?.send({
       type: 'subscribe',
       payload: { publisherId: deviceId, streamType: 'camera' },
     });
-  }, []);
+  }, [devices]);
 
   const handleUnsubscribe = (deviceId: string) => {
     webrtcRef.current?.unsubscribe(deviceId, 'camera');
@@ -333,11 +347,15 @@ function App() {
     });
   }, [isHologram, connected, joinForm.roomId]);
 
-  // 自动订阅房间内其他设备（采集端投屏后，本端自动接收画面）
+  // 电脑端自动等待手机投屏；仅对其它电脑端主动订阅
   useEffect(() => {
     if (!connected || !device) return;
     for (const d of devices) {
-      if (d.id !== device.id && d.online && !subscribed.has(d.id)) {
+      if (d.id === device.id || !d.online || subscribed.has(d.id)) continue;
+      if (d.type === 'mobile') {
+        webrtcRef.current?.noteAwaitingPublisher(d.id, 'camera');
+        setSubscribed((prev) => new Set(prev).add(d.id));
+      } else if (d.type === 'desktop') {
         void handleSubscribe(d.id);
       }
     }
@@ -573,6 +591,7 @@ function App() {
             devices={devices}
             localDeviceId={device?.id ?? null}
             subscribed={subscribed}
+            publishingDevices={publishingDevices}
             onSubscribe={handleSubscribe}
             onUnsubscribe={handleUnsubscribe}
           />
@@ -590,7 +609,11 @@ function App() {
                 />
               ))}
               {remoteStreams.size === 0 && (
-                <div className="empty-viewport">订阅设备画面后将在此显示</div>
+                <div className="empty-viewport">
+                  {publishingDevices.size > 0
+                    ? '手机正在投屏，正在建立连接…'
+                    : '等待手机端点击「开始投屏」，或订阅其它电脑画面'}
+                </div>
               )}
             </div>
           ) : (

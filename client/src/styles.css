@@ -408,6 +408,16 @@ button.active { background: var(--primary); border-color: var(--primary); }
   aspect-ratio: 16/9;
 }
 .grid-video video { width: 100%; height: 100%; object-fit: cover; }
+.grid-video.chroma {
+  background:
+    linear-gradient(45deg, #1a2030 25%, transparent 25%),
+    linear-gradient(-45deg, #1a2030 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #1a2030 75%),
+    linear-gradient(-45deg, transparent 75%, #1a2030 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+}
+.grid-video.chroma canvas { width: 100%; height: 100%; object-fit: cover; display: block; }
 .grid-video span {
   position: absolute;
   bottom: 4px;

@@ -55,12 +55,14 @@ export async function applySegmentation(
     seg.onResults((results) => {
       window.clearTimeout(timeout);
       ctx.clearRect(0, 0, w, h);
+      // 非人像区域保持绿幕，供接收端色键抠透明
       ctx.fillStyle = '#00ff00';
       ctx.fillRect(0, 0, w, h);
-      ctx.drawImage(results.image, 0, 0, w, h);
-      ctx.globalCompositeOperation = 'destination-in';
+      ctx.save();
       ctx.drawImage(results.segmentationMask, 0, 0, w, h);
-      ctx.globalCompositeOperation = 'source-over';
+      ctx.globalCompositeOperation = 'source-in';
+      ctx.drawImage(results.image, 0, 0, w, h);
+      ctx.restore();
       resolve();
     });
     seg.send({ image: sourceVideo }).catch((err) => {

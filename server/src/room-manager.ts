@@ -182,6 +182,18 @@ export class RoomManager {
     if (device) device.sensor = sensor;
   }
 
+  updateDeviceFlags(
+    roomId: string,
+    deviceId: string,
+    flags: { hasAlpha?: boolean }
+  ): DeviceInfo | undefined {
+    const room = this.getRoom(roomId);
+    const device = room?.devices.find((d) => d.id === deviceId);
+    if (!device) return undefined;
+    if (typeof flags.hasAlpha === 'boolean') device.hasAlpha = flags.hasAlpha;
+    return device;
+  }
+
   broadcast(roomId: string, message: SignalingMessage, excludeDeviceId?: string): void {
     for (const [, client] of this.clients) {
       if (client.roomId !== roomId) continue;

@@ -68,7 +68,8 @@ export type MessageType =
   | 'ping'
   | 'pong'
   | 'error'
-  | 'role_change';
+  | 'role_change'
+  | 'device_update';
 
 export interface SignalingMessage {
   type: MessageType;

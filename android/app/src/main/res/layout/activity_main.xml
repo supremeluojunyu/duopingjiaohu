@@ -30,7 +30,7 @@
         android:layout_height="wrap_content"
         android:layout_margin="32dp"
         android:gravity="center"
-        android:text="已加入房间\n点击下方「开始投屏」推送摄像头画面"
+        android:text="已加入房间\n1. 开启「人像抠图」可让接收端去掉背景\n2. 点击「开始投屏」推送摄像头\n3. 其他设备（电脑/全息端）会自动接收画面"
         android:textColor="#9CA3AF"
         android:textSize="16sp"
         android:lineSpacingExtra="6dp"

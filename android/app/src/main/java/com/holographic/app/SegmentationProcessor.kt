@@ -26,7 +26,6 @@ class SegmentationProcessor(private val context: Context) : VideoProcessor {
     private var sink: VideoSink? = null
     private var segmenter: ImageSegmenter? = null
     private var enabled = false
-    private var frameCounter = 0
 
     init {
         initSegmenter()
@@ -65,12 +64,6 @@ class SegmentationProcessor(private val context: Context) : VideoProcessor {
         if (targetSink == null) return
 
         if (!enabled || segmenter == null) {
-            targetSink.onFrame(frame)
-            return
-        }
-
-        frameCounter++
-        if (frameCounter % 2 != 0) {
             targetSink.onFrame(frame)
             return
         }

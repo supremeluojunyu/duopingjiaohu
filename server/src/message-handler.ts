@@ -202,6 +202,21 @@ export function handleMessage(ws: WebSocket, raw: WebSocket.RawData): void {
       break;
     }
 
+    case 'device_update': {
+      if (!client) return;
+      const hasAlpha = msg.payload.hasAlpha as boolean | undefined;
+      const updated = roomManager.updateDeviceFlags(client.roomId, client.deviceId, { hasAlpha });
+      if (updated) {
+        roomManager.broadcast(client.roomId, {
+          type: 'device_update',
+          payload: { device: updated },
+          timestamp: Date.now(),
+          from: client.deviceId,
+        });
+      }
+      break;
+    }
+
     case 'role_change': {
       if (!client || !roomManager.isAdmin(client.roomId, client.deviceId)) {
         error(ws, '需要管理员权限');

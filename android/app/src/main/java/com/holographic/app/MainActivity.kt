@@ -27,6 +27,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     private var localDeviceId: String? = null
     private var isPublishing = false
     private var segmentationEnabled = false
+    private var knownDeviceIds = mutableSetOf<String>()
     private var sensorManager: SensorManager? = null
     private var rotationSensor: Sensor? = null
     private var lastSensorReport = 0L
@@ -177,6 +178,31 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         }.start()
     }
 
+    private fun ensureWebRtcManager() {
+        if (webrtcManager != null || localDeviceId == null || signalingClient == null) return
+        if (eglBase == null) {
+            eglBase = EglBase.create()
+        }
+        webrtcManager = WebRTCManager(
+            context = this,
+            signaling = signalingClient!!,
+            localRenderer = binding.localPreview,
+            remoteRenderer = binding.remotePreview,
+            localDeviceId = localDeviceId!!,
+            eglBase = eglBase!!
+        )
+        webrtcManager!!.ensureReceiveReady()
+    }
+
+    private fun subscribeKnownPeers() {
+        ensureWebRtcManager()
+        for (id in knownDeviceIds) {
+            if (id != localDeviceId) {
+                webrtcManager?.subscribe(id)
+            }
+        }
+    }
+
     private fun togglePublishing() {
         if (localDeviceId == null) {
             Toast.makeText(this, "请先加入房间", Toast.LENGTH_SHORT).show()
@@ -191,25 +217,10 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             binding.tvEmptyHint.visibility = View.VISIBLE
             sensorManager?.unregisterListener(this)
         } else {
-            if (eglBase == null) {
-                try {
-                    eglBase = EglBase.create()
-                } catch (e: Exception) {
-                    Toast.makeText(this, "图形初始化失败: ${e.message}", Toast.LENGTH_LONG).show()
-                    return
-                }
-            }
-            val egl = eglBase ?: return
+            ensureWebRtcManager()
             binding.localPreview.visibility = View.VISIBLE
             binding.tvEmptyHint.visibility = View.GONE
-            webrtcManager = WebRTCManager(
-                context = this,
-                signaling = signalingClient!!,
-                localRenderer = binding.localPreview,
-                remoteRenderer = binding.remotePreview,
-                localDeviceId = localDeviceId!!,
-                eglBase = egl
-            )
+            binding.remotePreview.visibility = View.VISIBLE
             if (!webrtcManager!!.startPublishing(segmentationEnabled)) {
                 binding.localPreview.visibility = View.GONE
                 binding.tvEmptyHint.visibility = View.VISIBLE
@@ -218,7 +229,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             }
             isPublishing = true
             binding.btnStartCast.text = "停止投屏"
-            binding.remotePreview.visibility = View.VISIBLE
             rotationSensor?.let { sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
         }
     }
@@ -231,6 +241,21 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                 val roomId = msg.payload?.get("roomId")?.asString
                 binding.tvRoomId.text = "房间: $roomId"
                 binding.tvLatency.text = "已连接"
+
+                knownDeviceIds.clear()
+                msg.payload?.getAsJsonArray("devices")?.forEach { el ->
+                    el.asJsonObject.get("id")?.asString?.let { knownDeviceIds.add(it) }
+                }
+                ensureWebRtcManager()
+                subscribeKnownPeers()
+            }
+            "peer_joined" -> {
+                val deviceId = msg.payload?.getAsJsonObject("device")?.get("id")?.asString
+                if (deviceId != null) {
+                    knownDeviceIds.add(deviceId)
+                    ensureWebRtcManager()
+                    webrtcManager?.handleSignalingMessage(msg)
+                }
             }
             "angle_guide" -> {
                 val payload = msg.payload ?: return
@@ -241,7 +266,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                     payload.get("message")?.asString
                 )
             }
-            "offer", "answer", "ice", "peer_joined", "subscribe" -> {
+            "offer", "answer", "ice", "subscribe" -> {
+                ensureWebRtcManager()
                 webrtcManager?.handleSignalingMessage(msg)
             }
             "error" -> {

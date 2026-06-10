@@ -19,6 +19,7 @@ import {
   ScenePreset,
   StreamMapping,
 } from './types';
+import { drawChromaKeyedFrame } from './utils/chromaKeyMaterial';
 import './styles.css';
 
 const DEFAULT_SERVER = DEFAULT_SIGNALING_URL;
@@ -185,6 +186,13 @@ function App() {
         if (device?.id === d.id) setDevice(d);
         break;
       }
+      case 'device_update': {
+        const d = msg.payload.device as DeviceInfo;
+        setDevices((prev) => prev.map((x) => (x.id === d.id ? d : x)));
+        if (device?.id === d.id) setDevice(d);
+        webrtcRef.current?.setDeviceAlpha(d.id, d.hasAlpha);
+        break;
+      }
       case 'scene_save': {
         const preset = msg.payload.preset as ScenePreset;
         setPresets((prev) => [...prev, preset]);
@@ -266,6 +274,15 @@ function App() {
       localVideoRef.current.srcObject = stream;
     }
     setIsPublishing(true);
+    signalingRef.current.send({
+      type: 'device_update',
+      payload: { hasAlpha: segmentationEnabled },
+    });
+    if (device) {
+      const updated = { ...device, hasAlpha: segmentationEnabled };
+      setDevice(updated);
+      setDevices((prev) => prev.map((d) => (d.id === device.id ? updated : d)));
+    }
   };
 
   const stopPublishing = () => {
@@ -303,15 +320,15 @@ function App() {
     });
   }, [isHologram, connected, joinForm.roomId]);
 
-  // 全息显示端：自动订阅所有在线设备
+  // 自动订阅房间内其他设备（采集端投屏后，本端自动接收画面）
   useEffect(() => {
-    if (!connected || !isHologram || !device) return;
+    if (!connected || !device) return;
     for (const d of devices) {
       if (d.id !== device.id && d.online && !subscribed.has(d.id)) {
         void handleSubscribe(d.id);
       }
     }
-  }, [connected, isHologram, devices, device, subscribed, handleSubscribe]);
+  }, [connected, devices, device, subscribed, handleSubscribe]);
 
   const handleMappingChange = (mapping: StreamMapping) => {
     signalingRef.current?.send({
@@ -477,7 +494,12 @@ function App() {
           {viewMode === 'grid' ? (
             <div className="grid-view">
               {[...remoteStreams.values()].map((rs) => (
-                <GridVideo key={`${rs.deviceId}:${rs.streamType}`} stream={rs.stream} label={rs.deviceId.slice(0, 8)} />
+                <GridVideo
+                  key={`${rs.deviceId}:${rs.streamType}`}
+                  stream={rs.stream}
+                  label={rs.deviceId.slice(0, 8)}
+                  hasAlpha={rs.hasAlpha}
+                />
               ))}
               {remoteStreams.size === 0 && (
                 <div className="empty-viewport">等待采集端投屏并自动订阅…</div>
@@ -547,7 +569,12 @@ function App() {
           {viewMode === 'grid' ? (
             <div className="grid-view">
               {[...remoteStreams.values()].map((rs) => (
-                <GridVideo key={`${rs.deviceId}:${rs.streamType}`} stream={rs.stream} label={rs.deviceId.slice(0, 8)} />
+                <GridVideo
+                  key={`${rs.deviceId}:${rs.streamType}`}
+                  stream={rs.stream}
+                  label={rs.deviceId.slice(0, 8)}
+                  hasAlpha={rs.hasAlpha}
+                />
               ))}
               {remoteStreams.size === 0 && (
                 <div className="empty-viewport">订阅设备画面后将在此显示</div>
@@ -580,7 +607,13 @@ function App() {
           <div className="thumbnails">
             <h3>画面缩略图</h3>
             {[...remoteStreams.values()].map((rs) => (
-              <GridVideo key={`thumb-${rs.deviceId}`} stream={rs.stream} label={rs.deviceId.slice(0, 8)} small />
+              <GridVideo
+                key={`thumb-${rs.deviceId}`}
+                stream={rs.stream}
+                label={rs.deviceId.slice(0, 8)}
+                small
+                hasAlpha={rs.hasAlpha}
+              />
             ))}
           </div>
         </aside>
@@ -601,14 +634,49 @@ function App() {
   );
 }
 
-function GridVideo({ stream, label, small }: { stream: MediaStream; label: string; small?: boolean }) {
+function GridVideo({
+  stream,
+  label,
+  small,
+  hasAlpha = false,
+}: {
+  stream: MediaStream;
+  label: string;
+  small?: boolean;
+  hasAlpha?: boolean;
+}) {
   const ref = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
   useEffect(() => {
     if (ref.current) ref.current.srcObject = stream;
   }, [stream]);
+
+  useEffect(() => {
+    if (!hasAlpha) return;
+    const video = ref.current;
+    const canvas = canvasRef.current;
+    if (!video || !canvas) return;
+
+    let raf = 0;
+    const tick = () => {
+      drawChromaKeyedFrame(video, canvas);
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [hasAlpha, stream]);
+
   return (
-    <div className={`grid-video ${small ? 'small' : ''}`}>
-      <video ref={ref} autoPlay playsInline muted />
+    <div className={`grid-video ${small ? 'small' : ''} ${hasAlpha ? 'chroma' : ''}`}>
+      {hasAlpha ? (
+        <>
+          <video ref={ref} autoPlay playsInline muted hidden />
+          <canvas ref={canvasRef} />
+        </>
+      ) : (
+        <video ref={ref} autoPlay playsInline muted />
+      )}
       <span>{label}</span>
     </div>
   );

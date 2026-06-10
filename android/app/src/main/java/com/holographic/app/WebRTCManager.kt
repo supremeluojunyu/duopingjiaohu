@@ -32,23 +32,31 @@ class WebRTCManager(
     private val pendingIce = mutableMapOf<String, MutableList<IceCandidate>>()
     private var isPublishing = false
     private var segmentationProcessor: SegmentationProcessor? = null
+    private var receiveReady = false
 
     private val iceServers = listOf(
         IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
         IceServer.builder("stun:stun1.l.google.com:19302").createIceServer()
     )
 
+    /** 加入房间后初始化，用于接收远端 offer */
+    fun ensureReceiveReady() {
+        if (receiveReady) return
+        initializeFactory()
+        remoteRenderer?.init(eglBase.eglBaseContext, null)
+        remoteRenderer?.setMirror(false)
+        remoteRenderer?.setEnableHardwareScaler(true)
+        receiveReady = true
+        Log.i(TAG, "接收通道已就绪")
+    }
+
     fun startPublishing(enableSegmentation: Boolean): Boolean {
         if (isPublishing) return true
-        initializeFactory()
+        ensureReceiveReady()
 
         localRenderer.init(eglBase.eglBaseContext, null)
         localRenderer.setMirror(true)
         localRenderer.setEnableHardwareScaler(true)
-
-        remoteRenderer?.init(eglBase.eglBaseContext, null)
-        remoteRenderer?.setMirror(false)
-        remoteRenderer?.setEnableHardwareScaler(true)
 
         val capturer = createCameraCapturer() ?: run {
             Log.e(TAG, "无法打开摄像头")
@@ -78,25 +86,67 @@ class WebRTCManager(
         localAudioTrack = factory!!.createAudioTrack("audio0", audioSource!!)
 
         isPublishing = true
+        renegotiateAllPeers()
         Log.i(TAG, "推流已开始")
         return true
+    }
+
+    fun subscribe(publisherId: String) {
+        if (publisherId == localDeviceId) return
+        val key = peerKey(publisherId)
+        if (peerConnections.containsKey(key)) return
+
+        ensureReceiveReady()
+        val pc = getOrCreatePeerConnection(publisherId)
+        attachLocalTracks(pc)
+
+        pc.createOffer(object : SdpObserver {
+            override fun onCreateSuccess(offer: SessionDescription?) {
+                offer ?: return
+                pc.setLocalDescription(object : SdpObserver {
+                    override fun onCreateSuccess(desc: SessionDescription?) {}
+                    override fun onSetSuccess() {
+                        sendSdp("offer", offer, publisherId)
+                        signaling.send(
+                            "subscribe",
+                            mapOf("publisherId" to publisherId, "streamType" to STREAM_TYPE)
+                        )
+                    }
+                    override fun onCreateFailure(error: String?) {
+                        Log.e(TAG, "setLocalDescription(offer) 失败: $error")
+                    }
+                    override fun onSetFailure(error: String?) {
+                        Log.e(TAG, "setLocalDescription(offer) 失败: $error")
+                    }
+                }, offer)
+            }
+            override fun onSetSuccess() {}
+            override fun onCreateFailure(error: String?) {
+                Log.e(TAG, "createOffer 失败: $error")
+            }
+            override fun onSetFailure(error: String?) {}
+        }, MediaConstraints())
     }
 
     fun handleSignalingMessage(msg: SignalingClient.SignalingMessage) {
         when (msg.type) {
             "peer_joined" -> {
                 val deviceId = msg.payload?.getAsJsonObject("device")?.get("id")?.asString ?: return
-                if (deviceId != localDeviceId && isPublishing) {
-                    // 等待对方发送 offer
+                if (deviceId == localDeviceId) return
+                if (isPublishing) {
+                    offerStreamToPeer(deviceId)
+                } else {
+                    subscribe(deviceId)
                 }
             }
             "offer" -> handleOffer(msg)
             "answer" -> handleAnswer(msg)
             "ice" -> handleIceCandidate(msg)
             "subscribe" -> {
+                val publisherId = msg.payload?.get("publisherId")?.asString ?: return
                 val subscriberId = msg.payload?.get("subscriberId")?.asString ?: return
-                if (subscriberId != localDeviceId && isPublishing) {
-                    // Web 端会主动发 offer，此处无需动作
+                if (publisherId == localDeviceId && subscriberId != localDeviceId && isPublishing) {
+                    offerStreamToPeer(subscriberId)
                 }
             }
         }
@@ -111,22 +161,23 @@ class WebRTCManager(
         segmentationProcessor?.release()
         segmentationProcessor = null
 
+        localVideoTrack?.removeSink(localRenderer)
         localVideoTrack?.dispose()
         localAudioTrack?.dispose()
         videoSource?.dispose()
         audioSource?.dispose()
         localVideoTrack = null
         localAudioTrack = null
-
-        peerConnections.values.forEach { it.close() }
-        peerConnections.clear()
-        pendingIce.clear()
     }
 
     fun release() {
         stopPublishing()
+        peerConnections.values.forEach { it.close() }
+        peerConnections.clear()
+        pendingIce.clear()
         factory?.dispose()
         factory = null
+        receiveReady = false
         localRenderer.release()
         remoteRenderer?.release()
     }
@@ -154,7 +205,6 @@ class WebRTCManager(
         val enumerator = Camera2Enumerator(context)
         val deviceNames = enumerator.deviceNames
 
-        // 优先前置摄像头
         for (name in deviceNames) {
             if (enumerator.isFrontFacing(name)) {
                 return enumerator.createCapturer(name, null)
@@ -169,6 +219,52 @@ class WebRTCManager(
     }
 
     private fun peerKey(remoteId: String) = "$remoteId:$STREAM_TYPE"
+
+    private fun attachLocalTracks(pc: PeerConnection) {
+        if (!isPublishing) return
+        localVideoTrack?.let { track ->
+            val sender = pc.senders.firstOrNull { it.track()?.kind() == "video" }
+            if (sender != null) sender.setTrack(track, true) else pc.addTrack(track, listOf("stream0"))
+        }
+        localAudioTrack?.let { track ->
+            val sender = pc.senders.firstOrNull { it.track()?.kind() == "audio" }
+            if (sender != null) sender.setTrack(track, true) else pc.addTrack(track, listOf("stream0"))
+        }
+    }
+
+    private fun offerStreamToPeer(remoteId: String) {
+        if (!isPublishing || remoteId == localDeviceId) return
+        ensureReceiveReady()
+        val pc = getOrCreatePeerConnection(remoteId)
+        attachLocalTracks(pc)
+
+        pc.createOffer(object : SdpObserver {
+            override fun onCreateSuccess(offer: SessionDescription?) {
+                offer ?: return
+                pc.setLocalDescription(object : SdpObserver {
+                    override fun onCreateSuccess(desc: SessionDescription?) {}
+                    override fun onSetSuccess() {
+                        sendSdp("offer", offer, remoteId)
+                    }
+                    override fun onCreateFailure(error: String?) {
+                        Log.e(TAG, "setLocalDescription(re-offer) 失败: $error")
+                    }
+                    override fun onSetFailure(error: String?) {
+                        Log.e(TAG, "setLocalDescription(re-offer) 失败: $error")
+                    }
+                }, offer)
+            }
+            override fun onSetSuccess() {}
+            override fun onCreateFailure(error: String?) {
+                Log.e(TAG, "createOffer(renegotiate) 失败: $error")
+            }
+            override fun onSetFailure(error: String?) {}
+        }, MediaConstraints())
+    }
+
+    private fun renegotiateAllPeers() {
+        peerConnections.keys.map { it.substringBefore(':') }.distinct().forEach { offerStreamToPeer(it) }
+    }
 
     private fun getOrCreatePeerConnection(remoteId: String): PeerConnection {
         val key = peerKey(remoteId)
@@ -218,11 +314,7 @@ class WebRTCManager(
             override fun onRenegotiationNeeded() {}
         })!!
 
-        if (isPublishing) {
-            localVideoTrack?.let { pc.addTrack(it, listOf("stream0")) }
-            localAudioTrack?.let { pc.addTrack(it, listOf("stream0")) }
-        }
-
+        attachLocalTracks(pc)
         peerConnections[key] = pc
         return pc
     }
@@ -230,6 +322,8 @@ class WebRTCManager(
     private fun handleOffer(msg: SignalingClient.SignalingMessage) {
         val from = msg.from ?: return
         if (from == localDeviceId) return
+
+        ensureReceiveReady()
 
         val sdpJson = msg.payload?.getAsJsonObject("sdp") ?: return
         val sdp = SessionDescription(
@@ -248,15 +342,7 @@ class WebRTCManager(
                         pc.setLocalDescription(object : SdpObserver {
                             override fun onCreateSuccess(desc: SessionDescription?) {}
                             override fun onSetSuccess() {
-                                signaling.send(
-                                    "answer",
-                                    mapOf(
-                                        "sdp" to mapOf("type" to answer.type.canonicalForm(), "sdp" to answer.description),
-                                        "streamType" to STREAM_TYPE,
-                                        "targetId" to from
-                                    ),
-                                    to = from
-                                )
+                                sendSdp("answer", answer, from)
                             }
                             override fun onCreateFailure(error: String?) {
                                 Log.e(TAG, "setLocalDescription 失败: $error")
@@ -324,5 +410,17 @@ class WebRTCManager(
         val key = peerKey(remoteId)
         val pc = peerConnections[key] ?: return
         pendingIce.remove(key)?.forEach { pc.addIceCandidate(it) }
+    }
+
+    private fun sendSdp(type: String, sdp: SessionDescription, to: String) {
+        signaling.send(
+            type,
+            mapOf(
+                "sdp" to mapOf("type" to sdp.type.canonicalForm(), "sdp" to sdp.description),
+                "streamType" to STREAM_TYPE,
+                "targetId" to to
+            ),
+            to = to
+        )
     }
 }

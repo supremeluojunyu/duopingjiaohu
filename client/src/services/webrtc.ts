@@ -93,6 +93,7 @@ export class WebRTCManager {
 
     this.localStream = stream;
     this.localStream._hasAlpha = hasAlpha;
+    await this.renegotiateAllPeers();
     return this.localStream;
   }
 
@@ -109,14 +110,9 @@ export class WebRTCManager {
     const key = `${publisherId}:${streamType}`;
     if (this.peers.has(key)) return;
 
-    const pc = this.createPeerConnection(publisherId, streamType, true);
+    const pc = this.createPeerConnection(publisherId, streamType);
     this.peers.set(key, pc);
-
-    if (this.localStream) {
-      this.localStream.getTracks().forEach((track) => {
-        pc.addTrack(track, this.localStream!);
-      });
-    }
+    this.attachLocalTracks(pc);
 
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
@@ -139,11 +135,51 @@ export class WebRTCManager {
     this.notifyStreams();
   }
 
-  private createPeerConnection(
-    remoteId: string,
-    streamType: StreamType,
-    _isInitiator: boolean
-  ): RTCPeerConnection {
+  private attachLocalTracks(pc: RTCPeerConnection): void {
+    if (!this.localStream) return;
+    for (const track of this.localStream.getTracks()) {
+      const sender = pc.getSenders().find((s) => s.track?.kind === track.kind);
+      if (sender) {
+        void sender.replaceTrack(track);
+      } else {
+        pc.addTrack(track, this.localStream);
+      }
+    }
+  }
+
+  /** 作为发布方，向订阅者推送本地媒体轨 */
+  private async offerStreamToPeer(remoteId: string, streamType: StreamType = 'camera'): Promise<void> {
+    if (!this.localStream || remoteId === this.localDeviceId) return;
+
+    const key = `${remoteId}:${streamType}`;
+    let pc = this.peers.get(key);
+    if (!pc) {
+      pc = this.createPeerConnection(remoteId, streamType);
+      this.peers.set(key, pc);
+    }
+
+    this.attachLocalTracks(pc);
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+
+    this.signaling.send({
+      type: 'offer',
+      to: remoteId,
+      payload: { sdp: offer, streamType, targetId: remoteId },
+    });
+  }
+
+  private async renegotiateAllPeers(): Promise<void> {
+    if (!this.localStream) return;
+    const remoteIds = new Set<string>();
+    for (const key of this.peers.keys()) {
+      remoteIds.add(key.split(':')[0]!);
+    }
+    await Promise.all([...remoteIds].map((id) => this.offerStreamToPeer(id, 'camera')));
+  }
+
+  private createPeerConnection(remoteId: string, streamType: StreamType): RTCPeerConnection {
     const pc = new RTCPeerConnection({ iceServers: this.iceServers });
     const key = `${remoteId}:${streamType}`;
 
@@ -185,8 +221,11 @@ export class WebRTCManager {
     switch (msg.type) {
       case 'peer_joined': {
         const device = msg.payload.device as { id: string };
-        if (device.id !== this.localDeviceId && this.localStream) {
-          await this.subscribe(device.id, 'camera');
+        if (device.id === this.localDeviceId) break;
+        if (this.localStream) {
+          await this.offerStreamToPeer(device.id, streamType);
+        } else {
+          await this.subscribe(device.id, streamType);
         }
         break;
       }
@@ -196,14 +235,9 @@ export class WebRTCManager {
         const key = `${msg.from}:${streamType}`;
         let pc = this.peers.get(key);
         if (!pc) {
-          pc = this.createPeerConnection(msg.from, streamType, false);
+          pc = this.createPeerConnection(msg.from, streamType);
           this.peers.set(key, pc);
-
-          if (this.localStream) {
-            this.localStream.getTracks().forEach((track) => {
-              pc!.addTrack(track, this.localStream!);
-            });
-          }
+          this.attachLocalTracks(pc);
         }
 
         const sdp = msg.payload.sdp as RTCSessionDescriptionInit;
@@ -252,9 +286,11 @@ export class WebRTCManager {
       }
 
       case 'subscribe': {
+        const publisherId = msg.payload.publisherId as string;
         const subscriberId = msg.payload.subscriberId as string;
-        if (subscriberId !== this.localDeviceId && this.localStream) {
-          await this.subscribe(subscriberId, streamType);
+        if (publisherId !== this.localDeviceId || subscriberId === this.localDeviceId) return;
+        if (this.localStream) {
+          await this.offerStreamToPeer(subscriberId, streamType);
         }
         break;
       }

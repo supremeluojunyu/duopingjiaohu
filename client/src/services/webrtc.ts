@@ -16,6 +16,7 @@ export class WebRTCManager {
   private deviceAlpha = new Map<string, boolean>();
   private iceServers: RTCIceServer[] = getCachedIceServers();
   private lowQualityMode = false;
+  private makingOffer = new Set<string>();
 
   constructor(
     private signaling: SignalingClient,
@@ -114,14 +115,18 @@ export class WebRTCManager {
     this.peers.set(key, pc);
     this.attachLocalTracks(pc);
 
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-
-    this.signaling.send({
-      type: 'offer',
-      to: publisherId,
-      payload: { sdp: offer, streamType, targetId: publisherId },
-    });
+    this.makingOffer.add(key);
+    try {
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      this.signaling.send({
+        type: 'offer',
+        to: publisherId,
+        payload: { sdp: offer, streamType, targetId: publisherId },
+      });
+    } finally {
+      this.makingOffer.delete(key);
+    }
   }
 
   unsubscribe(publisherId: string, streamType: StreamType = 'camera'): void {
@@ -160,14 +165,25 @@ export class WebRTCManager {
 
     this.attachLocalTracks(pc);
 
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
+    this.makingOffer.add(key);
+    try {
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      this.signaling.send({
+        type: 'offer',
+        to: remoteId,
+        payload: { sdp: offer, streamType, targetId: remoteId },
+      });
+    } finally {
+      this.makingOffer.delete(key);
+    }
+  }
 
-    this.signaling.send({
-      type: 'offer',
-      to: remoteId,
-      payload: { sdp: offer, streamType, targetId: remoteId },
-    });
+  /** 手机端开始投屏后，主动向房间内已知设备推送画面 */
+  async publishToPeers(peerIds: string[]): Promise<void> {
+    if (!this.localStream) return;
+    const targets = peerIds.filter((id) => id !== this.localDeviceId);
+    await Promise.all(targets.map((id) => this.offerStreamToPeer(id, 'camera')));
   }
 
   private async renegotiateAllPeers(): Promise<void> {
@@ -220,11 +236,12 @@ export class WebRTCManager {
 
     switch (msg.type) {
       case 'peer_joined': {
-        const device = msg.payload.device as { id: string };
+        const device = msg.payload.device as { id: string; type: 'mobile' | 'desktop' };
         if (device.id === this.localDeviceId) break;
         if (this.localStream) {
           await this.offerStreamToPeer(device.id, streamType);
         } else {
+          // 仅由电脑端主动订阅手机端，避免双向 offer 冲突
           await this.subscribe(device.id, streamType);
         }
         break;
@@ -241,13 +258,30 @@ export class WebRTCManager {
         }
 
         const sdp = msg.payload.sdp as RTCSessionDescriptionInit;
-        await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+
+        // 处理 offer 冲突：对方发起 offer 时回滚本地 offer，作为应答方
+        const offerCollision = this.makingOffer.has(key) || pc.signalingState !== 'stable';
+        if (offerCollision) {
+          try {
+            await pc.setLocalDescription({ type: 'rollback' } as RTCSessionDescriptionInit);
+          } catch {
+            /* 部分环境不支持 rollback，继续尝试 */
+          }
+        }
+
+        try {
+          await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+        } catch (err) {
+          console.error('[WebRTC] setRemoteDescription(offer) failed', err);
+          return;
+        }
 
         const pending = this.pendingCandidates.get(key) ?? [];
         for (const c of pending) {
           await pc.addIceCandidate(new RTCIceCandidate(c));
         }
         this.pendingCandidates.delete(key);
+        this.makingOffer.delete(key);
 
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
@@ -266,7 +300,21 @@ export class WebRTCManager {
         const pc = this.peers.get(key);
         if (!pc) return;
         const sdp = msg.payload.sdp as RTCSessionDescriptionInit;
-        await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+        try {
+          await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+        } catch (err) {
+          console.error('[WebRTC] setRemoteDescription(answer) failed', err);
+        }
+        break;
+      }
+
+      case 'publish_started': {
+        const publisherId = msg.payload.deviceId as string;
+        if (publisherId === this.localDeviceId) break;
+        const key = `${publisherId}:${streamType}`;
+        if (!this.peers.has(key)) {
+          await this.subscribe(publisherId, streamType);
+        }
         break;
       }
 

@@ -33,6 +33,7 @@ class WebRTCManager(
     private var isPublishing = false
     private var segmentationProcessor: SegmentationProcessor? = null
     private var receiveReady = false
+    private val knownPeerIds = mutableSetOf<String>()
 
     private val iceServers = listOf(
         IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
@@ -48,6 +49,15 @@ class WebRTCManager(
         remoteRenderer?.setEnableHardwareScaler(true)
         receiveReady = true
         Log.i(TAG, "接收通道已就绪")
+    }
+
+    fun setKnownPeerIds(ids: Collection<String>) {
+        knownPeerIds.clear()
+        knownPeerIds.addAll(ids.filter { it != localDeviceId })
+    }
+
+    fun notePeerJoined(peerId: String) {
+        if (peerId != localDeviceId) knownPeerIds.add(peerId)
     }
 
     fun startPublishing(enableSegmentation: Boolean): Boolean {
@@ -133,10 +143,10 @@ class WebRTCManager(
             "peer_joined" -> {
                 val deviceId = msg.payload?.getAsJsonObject("device")?.get("id")?.asString ?: return
                 if (deviceId == localDeviceId) return
+                notePeerJoined(deviceId)
+                // 手机作为采集端：仅主动推流，不 subscribe 电脑（避免双向 offer 冲突）
                 if (isPublishing) {
                     offerStreamToPeer(deviceId)
-                } else {
-                    subscribe(deviceId)
                 }
             }
             "offer" -> handleOffer(msg)
@@ -263,7 +273,11 @@ class WebRTCManager(
     }
 
     private fun renegotiateAllPeers() {
-        peerConnections.keys.map { it.substringBefore(':') }.distinct().forEach { offerStreamToPeer(it) }
+        val targets = (peerConnections.keys.map { it.substringBefore(':') } + knownPeerIds)
+            .filter { it != localDeviceId }
+            .distinct()
+        Log.i(TAG, "向 ${targets.size} 个设备重协商推流: $targets")
+        targets.forEach { offerStreamToPeer(it) }
     }
 
     private fun getOrCreatePeerConnection(remoteId: String): PeerConnection {
@@ -332,10 +346,12 @@ class WebRTCManager(
         )
 
         val pc = getOrCreatePeerConnection(from)
+        attachLocalTracks(pc)
         pc.setRemoteDescription(object : SdpObserver {
             override fun onCreateSuccess(desc: SessionDescription?) {}
             override fun onSetSuccess() {
                 drainPendingIce(from)
+                attachLocalTracks(pc)
                 pc.createAnswer(object : SdpObserver {
                     override fun onCreateSuccess(answer: SessionDescription?) {
                         answer ?: return

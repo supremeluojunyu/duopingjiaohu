@@ -192,15 +192,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             eglBase = eglBase!!
         )
         webrtcManager!!.ensureReceiveReady()
-    }
-
-    private fun subscribeKnownPeers() {
-        ensureWebRtcManager()
-        for (id in knownDeviceIds) {
-            if (id != localDeviceId) {
-                webrtcManager?.subscribe(id)
-            }
-        }
+        webrtcManager!!.setKnownPeerIds(knownDeviceIds)
     }
 
     private fun togglePublishing() {
@@ -218,6 +210,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             sensorManager?.unregisterListener(this)
         } else {
             ensureWebRtcManager()
+            webrtcManager?.setKnownPeerIds(knownDeviceIds)
             binding.localPreview.visibility = View.VISIBLE
             binding.tvEmptyHint.visibility = View.GONE
             binding.remotePreview.visibility = View.VISIBLE
@@ -229,6 +222,14 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             }
             isPublishing = true
             binding.btnStartCast.text = "停止投屏"
+            signalingClient?.send(
+                "publish_started",
+                mapOf("hasAlpha" to segmentationEnabled)
+            )
+            signalingClient?.send(
+                "device_update",
+                mapOf("hasAlpha" to segmentationEnabled)
+            )
             rotationSensor?.let { sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
         }
     }
@@ -247,13 +248,14 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                     el.asJsonObject.get("id")?.asString?.let { knownDeviceIds.add(it) }
                 }
                 ensureWebRtcManager()
-                subscribeKnownPeers()
+                webrtcManager?.setKnownPeerIds(knownDeviceIds)
             }
             "peer_joined" -> {
                 val deviceId = msg.payload?.getAsJsonObject("device")?.get("id")?.asString
                 if (deviceId != null) {
                     knownDeviceIds.add(deviceId)
                     ensureWebRtcManager()
+                    webrtcManager?.notePeerJoined(deviceId)
                     webrtcManager?.handleSignalingMessage(msg)
                 }
             }

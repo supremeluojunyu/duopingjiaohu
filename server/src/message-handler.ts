@@ -217,6 +217,24 @@ export function handleMessage(ws: WebSocket, raw: WebSocket.RawData): void {
       break;
     }
 
+    case 'publish_started': {
+      if (!client) return;
+      roomManager.broadcast(
+        client.roomId,
+        {
+          type: 'publish_started',
+          payload: {
+            deviceId: client.deviceId,
+            hasAlpha: Boolean(msg.payload.hasAlpha),
+          },
+          timestamp: Date.now(),
+          from: client.deviceId,
+        },
+        client.deviceId
+      );
+      break;
+    }
+
     case 'role_change': {
       if (!client || !roomManager.isAdmin(client.roomId, client.deviceId)) {
         error(ws, '需要管理员权限');

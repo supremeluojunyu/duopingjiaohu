@@ -137,7 +137,9 @@ function App() {
         const dev = payload.device as DeviceInfo;
         if (signalingRef.current) {
           const webrtc = new WebRTCManager(signalingRef.current, dev.id);
-          if (pendingIceRef.current) webrtc.setIceServers(pendingIceRef.current);
+          if (pendingIceRef.current) {
+            webrtc.setIceServers(pendingIceRef.current);
+          }
           webrtc.setRemoteStreamCallback(setRemoteStreams);
           webrtcRef.current = webrtc;
         }
@@ -191,6 +193,14 @@ function App() {
         setDevices((prev) => prev.map((x) => (x.id === d.id ? d : x)));
         if (device?.id === d.id) setDevice(d);
         webrtcRef.current?.setDeviceAlpha(d.id, d.hasAlpha);
+        break;
+      }
+      case 'publish_started': {
+        const publisherId = msg.payload.deviceId as string;
+        webrtcRef.current?.setDeviceAlpha(
+          publisherId,
+          Boolean(msg.payload.hasAlpha)
+        );
         break;
       }
       case 'scene_save': {
@@ -255,10 +265,9 @@ function App() {
     signalingRef.current = signaling;
 
     const iceServers = await fetchIceServers(form.serverUrl);
+    pendingIceRef.current = iceServers;
 
     signaling.send({ type: 'join', payload: joinPayload });
-
-    pendingIceRef.current = iceServers;
   };
 
   const startPublishing = async (includeScreen = false) => {
@@ -276,6 +285,10 @@ function App() {
     setIsPublishing(true);
     signalingRef.current.send({
       type: 'device_update',
+      payload: { hasAlpha: segmentationEnabled },
+    });
+    signalingRef.current.send({
+      type: 'publish_started',
       payload: { hasAlpha: segmentationEnabled },
     });
     if (device) {

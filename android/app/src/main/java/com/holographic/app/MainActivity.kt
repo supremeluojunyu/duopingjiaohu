@@ -93,9 +93,19 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         }
     }
 
+    private fun resolveServerUrl(): String {
+        val raw = binding.etServerUrl.text.toString().trim()
+        return if (raw.isNotEmpty()) {
+            SignalingConfig.setServerUrl(raw)
+            SignalingConfig.getServerUrl()
+        } else {
+            SignalingConfig.getServerUrl()
+        }
+    }
+
     private fun checkForAppUpdate(showNoUpdateToast: Boolean) {
         Thread {
-            val release = AppUpdateChecker.fetchRelease(SignalingConfig.SERVER_URL)
+            val release = AppUpdateChecker.fetchRelease(resolveServerUrl())
             val localCode = BuildConfig.VERSION_CODE
             runOnUiThread {
                 if (release == null) {
@@ -132,9 +142,16 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             return
         }
 
+        val serverUrl = binding.etServerUrl.text.toString().trim()
+        if (serverUrl.isEmpty()) {
+            Toast.makeText(this, "请输入信令服务器地址", Toast.LENGTH_SHORT).show()
+            return
+        }
+        SignalingConfig.setServerUrl(serverUrl)
+
         Thread {
             try {
-                val client = SignalingClient(SignalingConfig.SERVER_URL)
+                val client = SignalingClient(SignalingConfig.getServerUrl())
                 if (!client.connect()) {
                     runOnUiThread {
                         Toast.makeText(this, "无法连接信令服务器", Toast.LENGTH_LONG).show()
@@ -149,7 +166,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
 
                 client.onMessage { msg -> runOnUiThread { handleSignalingMessage(msg) } }
 
-                client.send("join", mapOf(
+                val joinPayload = mapOf(
                     "roomId" to roomId,
                     "device" to mapOf(
                         "name" to android.os.Build.MODEL,
@@ -158,7 +175,9 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                         "streamTypes" to listOf("camera"),
                         "hasAlpha" to segmentationEnabled
                     )
-                ))
+                )
+                client.setJoinPayload(joinPayload)
+                client.send("join", joinPayload)
 
                 signalingClient = client
 
@@ -248,8 +267,13 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                     el.asJsonObject.get("id")?.asString?.let { knownDeviceIds.add(it) }
                 }
                 ensureWebRtcManager()
-                webrtcManager?.setIceServers(IceConfigFetcher.fetch(SignalingConfig.SERVER_URL))
-                webrtcManager?.setKnownPeerIds(knownDeviceIds)
+                Thread {
+                    val iceServers = IceConfigFetcher.fetch(SignalingConfig.getServerUrl())
+                    runOnUiThread {
+                        webrtcManager?.setIceServers(iceServers)
+                        webrtcManager?.setKnownPeerIds(knownDeviceIds)
+                    }
+                }.start()
             }
             "peer_joined" -> {
                 val deviceId = msg.payload?.getAsJsonObject("device")?.get("id")?.asString

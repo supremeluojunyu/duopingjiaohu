@@ -9,7 +9,7 @@ import {
   updatePointCloud,
   updateReliefGeometry,
 } from '../utils/sceneEffects';
-import { createVideoMaterial } from '../utils/chromaKeyMaterial';
+import { configureVideoTexture, createVideoMaterial } from '../utils/chromaKeyMaterial';
 
 interface Scene3DProps {
   mappings: StreamMapping[];
@@ -27,21 +27,95 @@ interface StreamObject {
   effect: RenderEffect;
 }
 
+type SceneState = {
+  scene: THREE.Scene;
+  camera: THREE.PerspectiveCamera;
+  renderer: THREE.WebGLRenderer;
+  streamObjects: Map<string, StreamObject>;
+  animationId: number;
+  frameTick: number;
+};
+
+function toRenderEffect(viewMode: Scene3DProps['viewMode']): RenderEffect {
+  if (viewMode === 'relief') return 'relief';
+  if (viewMode === 'pointcloud') return 'pointcloud';
+  return 'plane';
+}
+
+function disposeStreamDisplay(obj: StreamObject): void {
+  if (obj.mesh) {
+    obj.mesh.geometry.dispose();
+    (obj.mesh.material as THREE.Material).dispose();
+    obj.mesh = undefined;
+  }
+  if (obj.points) {
+    obj.points.geometry.dispose();
+    (obj.points.material as THREE.Material).dispose();
+    obj.points = undefined;
+  }
+  obj.reliefGeo = undefined;
+  obj.texture?.dispose();
+  obj.texture = undefined;
+}
+
+function rebuildStreamDisplay(
+  ref: SceneState,
+  obj: StreamObject,
+  remote: RemoteStream,
+  mapping: StreamMapping,
+  effect: RenderEffect
+): void {
+  if (obj.mesh) ref.scene.remove(obj.mesh);
+  if (obj.points) ref.scene.remove(obj.points);
+  disposeStreamDisplay(obj);
+
+  const tex = new THREE.VideoTexture(obj.video);
+  obj.texture = tex;
+  obj.effect = effect;
+
+  let displayObject: THREE.Object3D;
+
+  if (effect === 'relief') {
+    const geo = createReliefGeometry(1.6, 0.9);
+    obj.reliefGeo = geo;
+    const mat = createVideoMaterial(tex, remote.hasAlpha, 'relief');
+    obj.mesh = new THREE.Mesh(geo, mat);
+    displayObject = obj.mesh;
+  } else if (effect === 'pointcloud') {
+    const { points, geometry, sampleW, sampleH } = createPointCloud(1.6, 0.9);
+    geometry.userData.sampleW = sampleW;
+    geometry.userData.sampleH = sampleH;
+    obj.points = points;
+    displayObject = points;
+  } else {
+    const mat = createVideoMaterial(tex, remote.hasAlpha, 'plane');
+    obj.mesh = new THREE.Mesh(new THREE.PlaneGeometry(1.6, 0.9), mat);
+    displayObject = obj.mesh;
+  }
+
+  ref.scene.add(displayObject);
+  displayObject.position.set(mapping.position.x, mapping.position.y, mapping.position.z);
+  displayObject.rotation.set(
+    THREE.MathUtils.degToRad(mapping.rotation.pitch),
+    THREE.MathUtils.degToRad(mapping.rotation.yaw),
+    THREE.MathUtils.degToRad(mapping.rotation.roll)
+  );
+  displayObject.scale.setScalar(mapping.scale);
+  displayObject.lookAt(0, mapping.position.y, 0);
+}
+
 export function useScene3D(
   containerRef: React.RefObject<HTMLDivElement | null>,
   { mappings, remoteStreams, viewMode, backgroundStream }: Scene3DProps
 ) {
-  const renderEffect: RenderEffect =
-    viewMode === 'relief' ? 'relief' : viewMode === 'pointcloud' ? 'pointcloud' : 'plane';
+  const viewModeRef = useRef(viewMode);
+  viewModeRef.current = viewMode;
 
-  const sceneRef = useRef<{
-    scene: THREE.Scene;
-    camera: THREE.PerspectiveCamera;
-    renderer: THREE.WebGLRenderer;
-    streamObjects: Map<string, StreamObject>;
-    animationId: number;
-    frameTick: number;
-  } | null>(null);
+  const sceneRef = useRef<SceneState | null>(null);
+  const mappingsRef = useRef(mappings);
+  const remoteStreamsRef = useRef(remoteStreams);
+  mappingsRef.current = mappings;
+  remoteStreamsRef.current = remoteStreams;
 
   useEffect(() => {
     const container = containerRef.current;
@@ -58,10 +132,13 @@ export function useScene3D(
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     container.appendChild(renderer.domElement);
 
-    scene.add(new THREE.AmbientLight(0xffffff, 0.6));
-    const dir = new THREE.DirectionalLight(0xffffff, 0.8);
-    dir.position.set(5, 10, 5);
-    scene.add(dir);
+    scene.add(new THREE.AmbientLight(0xffffff, 0.4));
+    const dirLight = new THREE.DirectionalLight(0xffffff, 1.0);
+    dirLight.position.set(10, 15, 10);
+    scene.add(dirLight);
+    const fillLight = new THREE.DirectionalLight(0x60a5fa, 0.3);
+    fillLight.position.set(-10, 5, -10);
+    scene.add(fillLight);
 
     scene.add(new THREE.GridHelper(10, 20, 0x1e3a5f, 0x0f172a));
     const floor = new THREE.Mesh(
@@ -72,18 +149,30 @@ export function useScene3D(
     scene.add(floor);
 
     let isDragging = false;
-    let prevX = 0, prevY = 0;
-    let camYaw = 0, camPitch = 0.2, camDist = 6;
+    let prevX = 0;
+    let prevY = 0;
+    let camYaw = 0;
+    let camPitch = 0.2;
+    let camDist = 6;
 
-    const onMouseDown = (e: MouseEvent) => { isDragging = true; prevX = e.clientX; prevY = e.clientY; };
+    const onMouseDown = (e: MouseEvent) => {
+      isDragging = true;
+      prevX = e.clientX;
+      prevY = e.clientY;
+    };
     const onMouseMove = (e: MouseEvent) => {
       if (!isDragging) return;
       camYaw += (e.clientX - prevX) * 0.005;
       camPitch = Math.max(-0.5, Math.min(1.2, camPitch + (e.clientY - prevY) * 0.005));
-      prevX = e.clientX; prevY = e.clientY;
+      prevX = e.clientX;
+      prevY = e.clientY;
     };
-    const onMouseUp = () => { isDragging = false; };
-    const onWheel = (e: WheelEvent) => { camDist = Math.max(2, Math.min(15, camDist + e.deltaY * 0.01)); };
+    const onMouseUp = () => {
+      isDragging = false;
+    };
+    const onWheel = (e: WheelEvent) => {
+      camDist = Math.max(2, Math.min(15, camDist + e.deltaY * 0.01));
+    };
 
     renderer.domElement.addEventListener('mousedown', onMouseDown);
     renderer.domElement.addEventListener('mousemove', onMouseMove);
@@ -102,12 +191,13 @@ export function useScene3D(
       ref.camera.position.z = Math.cos(camYaw) * Math.cos(camPitch) * camDist;
       ref.camera.lookAt(0, 1.2, 0);
 
-      const isStereo = viewMode === 'stereo';
-      ref.camera.aspect = isStereo ? container.clientWidth / container.clientHeight / 2 : container.clientWidth / container.clientHeight;
+      const isStereo = viewModeRef.current === 'stereo';
+      ref.camera.aspect = isStereo
+        ? container.clientWidth / container.clientHeight / 2
+        : container.clientWidth / container.clientHeight;
       ref.renderer.setScissorTest(isStereo);
       ref.camera.updateProjectionMatrix();
 
-      // 浮雕/点云动态更新（每 3 帧）
       if (ref.frameTick % 3 === 0) {
         for (const [, obj] of ref.streamObjects) {
           if (obj.video.readyState < 2) continue;
@@ -123,7 +213,8 @@ export function useScene3D(
       }
 
       if (isStereo) {
-        const w = container.clientWidth, h = container.clientHeight;
+        const w = container.clientWidth;
+        const h = container.clientHeight;
         ref.renderer.setViewport(0, 0, w / 2, h);
         ref.renderer.setScissor(0, 0, w / 2, h);
         ref.camera.position.x -= 0.08;
@@ -134,6 +225,8 @@ export function useScene3D(
         ref.renderer.render(ref.scene, ref.camera);
         ref.camera.position.x -= 0.08;
       } else {
+        ref.renderer.setViewport(0, 0, container.clientWidth, container.clientHeight);
+        ref.renderer.setScissor(0, 0, container.clientWidth, container.clientHeight);
         ref.renderer.render(ref.scene, ref.camera);
       }
 
@@ -143,7 +236,8 @@ export function useScene3D(
 
     const onResize = () => {
       if (!sceneRef.current) return;
-      const w = container.clientWidth, h = container.clientHeight;
+      const w = container.clientWidth;
+      const h = container.clientHeight;
       sceneRef.current.camera.aspect = w / h;
       sceneRef.current.camera.updateProjectionMatrix();
       sceneRef.current.renderer.setSize(w, h);
@@ -157,17 +251,20 @@ export function useScene3D(
       renderer.domElement.removeEventListener('mousemove', onMouseMove);
       renderer.domElement.removeEventListener('mouseup', onMouseUp);
       renderer.domElement.removeEventListener('wheel', onWheel);
-      sceneRef.current?.streamObjects.forEach((o) => { o.video.srcObject = null; });
+      sceneRef.current?.streamObjects.forEach((o) => {
+        o.video.srcObject = null;
+      });
       renderer.dispose();
       container.removeChild(renderer.domElement);
       sceneRef.current = null;
     };
-  }, [containerRef, viewMode]);
+  }, [containerRef]);
 
   useEffect(() => {
     const ref = sceneRef.current;
     if (!ref) return;
 
+    const effect = toRenderEffect(viewModeRef.current);
     const activeKeys = new Set<string>();
 
     for (const mapping of mappings) {
@@ -184,67 +281,43 @@ export function useScene3D(
         video.autoplay = true;
         video.muted = true;
         video.playsInline = true;
-        obj = { video, effect: renderEffect };
+        obj = { video, effect };
         ref.streamObjects.set(key, obj);
       }
 
-      obj.effect = renderEffect;
       if (obj.video.srcObject !== remote.stream) {
         obj.video.srcObject = remote.stream;
         obj.video.play().catch(() => {});
       }
 
-      // 清除旧对象
-      if (obj.mesh) { ref.scene.remove(obj.mesh); obj.mesh.geometry.dispose(); (obj.mesh.material as THREE.Material).dispose(); obj.mesh = undefined; }
-      if (obj.points) { ref.scene.remove(obj.points); obj.points.geometry.dispose(); (obj.points.material as THREE.Material).dispose(); obj.points = undefined; }
-      obj.reliefGeo = undefined;
-      obj.texture?.dispose();
-      obj.texture = undefined;
-
-      const tex = new THREE.VideoTexture(obj.video);
-      tex.colorSpace = THREE.SRGBColorSpace;
-      obj.texture = tex;
-
-      let displayObject: THREE.Object3D;
-
-      if (renderEffect === 'relief') {
-        const geo = createReliefGeometry(1.6, 0.9);
-        obj.reliefGeo = geo;
-        const mat = createVideoMaterial(tex, remote.hasAlpha, 'relief');
-        obj.mesh = new THREE.Mesh(geo, mat);
-        displayObject = obj.mesh;
-      } else if (renderEffect === 'pointcloud') {
-        const { points, geometry, sampleW, sampleH } = createPointCloud(1.6, 0.9);
-        geometry.userData.sampleW = sampleW;
-        geometry.userData.sampleH = sampleH;
-        obj.points = points;
-        displayObject = points;
-      } else {
-        const mat = createVideoMaterial(tex, remote.hasAlpha, 'plane');
-        obj.mesh = new THREE.Mesh(new THREE.PlaneGeometry(1.6, 0.9), mat);
-        displayObject = obj.mesh;
-      }
-
-      ref.scene.add(displayObject);
-      displayObject.position.set(mapping.position.x, mapping.position.y, mapping.position.z);
-      displayObject.rotation.set(
-        THREE.MathUtils.degToRad(mapping.rotation.pitch),
-        THREE.MathUtils.degToRad(mapping.rotation.yaw),
-        THREE.MathUtils.degToRad(mapping.rotation.roll)
-      );
-      displayObject.scale.setScalar(mapping.scale);
-      displayObject.lookAt(0, mapping.position.y, 0);
+      rebuildStreamDisplay(ref, obj, remote, mapping, effect);
     }
 
     for (const [key, obj] of ref.streamObjects) {
       if (!activeKeys.has(key)) {
         if (obj.mesh) ref.scene.remove(obj.mesh);
         if (obj.points) ref.scene.remove(obj.points);
+        disposeStreamDisplay(obj);
         obj.video.srcObject = null;
         ref.streamObjects.delete(key);
       }
     }
-  }, [mappings, remoteStreams, renderEffect]);
+  }, [mappings, remoteStreams]);
+
+  useEffect(() => {
+    const ref = sceneRef.current;
+    if (!ref) return;
+
+    const effect = toRenderEffect(viewMode);
+    for (const mapping of mappingsRef.current) {
+      if (!mapping.visible) continue;
+      const key = `${mapping.deviceId}:${mapping.streamType}`;
+      const obj = ref.streamObjects.get(key);
+      const remote = remoteStreamsRef.current.get(key);
+      if (!obj || !remote) continue;
+      rebuildStreamDisplay(ref, obj, remote, mapping, effect);
+    }
+  }, [viewMode]);
 
   useEffect(() => {
     if (!backgroundStream || !sceneRef.current) return;
@@ -255,6 +328,7 @@ export function useScene3D(
     video.playsInline = true;
     video.play();
     const tex = new THREE.VideoTexture(video);
+    configureVideoTexture(tex);
     sceneRef.current.scene.background = tex;
     return () => {
       video.srcObject = null;

@@ -28,19 +28,30 @@ void main() {
 }
 `;
 
+/** 视频纹理统一配置：线性滤波、关闭 mipmap（动态视频每帧更新） */
+export function configureVideoTexture(texture: THREE.VideoTexture): void {
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.minFilter = THREE.LinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  texture.generateMipmaps = false;
+}
+
 /** 带绿幕/黑底抠图的视频材质 */
 export function createVideoMaterial(
   texture: THREE.VideoTexture,
   hasAlpha: boolean,
   effect: 'plane' | 'relief' = 'plane'
 ): THREE.Material {
+  configureVideoTexture(texture);
+
   if (!hasAlpha) {
     if (effect === 'relief') {
       return new THREE.MeshStandardMaterial({
         map: texture,
         transparent: true,
         side: THREE.DoubleSide,
-        roughness: 0.6,
+        roughness: 0.8,
+        metalness: 0,
       });
     }
     return new THREE.MeshBasicMaterial({

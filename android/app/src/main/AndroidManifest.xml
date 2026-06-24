@@ -7,6 +7,7 @@
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-feature android:name="android.hardware.camera" android:required="true" />
 
+    <!-- 当前信令/下载使用 ws://、http://，需允许明文；迁移到 wss://、https:// 后移除 usesCleartextTraffic -->
     <application
         android:allowBackup="true"
         android:icon="@drawable/ic_launcher"

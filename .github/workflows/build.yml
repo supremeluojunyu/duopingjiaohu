@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 env:
-  VITE_SIGNALING_URL: ${{ vars.VITE_SIGNALING_URL || 'http://124.220.4.69:9000' }}
+  VITE_SIGNALING_URL: ${{ vars.VITE_SIGNALING_URL || 'http://localhost:9876' }}
 
 jobs:
   build-windows:
@@ -121,7 +121,7 @@ jobs:
           if-no-files-found: warn
 
   release:
-    needs: [build-windows, build-linux]
+    needs: [build-windows, build-linux, build-android]
     runs-on: ubuntu-latest
     if: >
       github.event_name == 'push' &&
@@ -141,11 +141,22 @@ jobs:
           name: holographic-linux
           path: release/linux
 
+      - uses: actions/download-artifact@v4
+        if: needs.build-android.result == 'success'
+        continue-on-error: true
+        with:
+          name: holographic-android
+          path: release/android
+
       - name: Prepare release assets
         run: |
           mkdir -p release-bundle
           cp release/windows/* release-bundle/
           if [ -d release/linux ]; then cp release/linux/* release-bundle/; fi
+          if [ -d release/android ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+            cp release/android/app-debug.apk "release-bundle/holographic-${VERSION}.apk"
+          fi
           ls -lah release-bundle/
 
       - name: Create GitHub Release

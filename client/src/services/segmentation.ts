@@ -4,6 +4,104 @@ let segmenter: SelfieSegmentation | null = null;
 let initPromise: Promise<SelfieSegmentation> | null = null;
 let initError: string | null = null;
 
+const maskCanvas = document.createElement('canvas');
+const maskCtx = maskCanvas.getContext('2d');
+const personCanvas = document.createElement('canvas');
+const personCtx = personCanvas.getContext('2d');
+
+function ensureMaskCanvas(w: number, h: number): CanvasRenderingContext2D | null {
+  if (!maskCtx) return null;
+  if (maskCanvas.width !== w) maskCanvas.width = w;
+  if (maskCanvas.height !== h) maskCanvas.height = h;
+  return maskCtx;
+}
+
+function ensurePersonCanvas(w: number, h: number): CanvasRenderingContext2D | null {
+  if (!personCtx) return null;
+  if (personCanvas.width !== w) personCanvas.width = w;
+  if (personCanvas.height !== h) personCanvas.height = h;
+  return personCtx;
+}
+
+/** 对分割 mask 做高斯模糊，软化抠图边缘 */
+function blurSegmentationMask(
+  mask: CanvasImageSource,
+  w: number,
+  h: number,
+  blurPx = 2
+): HTMLCanvasElement {
+  const ctx = ensureMaskCanvas(w, h);
+  if (!ctx) return maskCanvas;
+
+  ctx.clearRect(0, 0, w, h);
+  ctx.filter = `blur(${blurPx}px)`;
+  ctx.drawImage(mask, 0, 0, w, h);
+  ctx.filter = 'none';
+  return maskCanvas;
+}
+
+type SegmentationResults = {
+  segmentationMask: CanvasImageSource;
+  image: CanvasImageSource;
+};
+
+/** 将清晰人像绘制到离屏 canvas，供叠加使用 */
+function renderPersonLayer(results: SegmentationResults, w: number, h: number): HTMLCanvasElement {
+  const ctx = ensurePersonCanvas(w, h);
+  if (!ctx) return personCanvas;
+
+  ctx.clearRect(0, 0, w, h);
+  ctx.globalCompositeOperation = 'source-over';
+  const softMask = blurSegmentationMask(results.segmentationMask, w, h);
+  ctx.drawImage(softMask, 0, 0, w, h);
+  ctx.globalCompositeOperation = 'source-in';
+  ctx.drawImage(results.image, 0, 0, w, h);
+  ctx.globalCompositeOperation = 'source-over';
+  return personCanvas;
+}
+
+async function runSegmentation(
+  sourceVideo: HTMLVideoElement,
+  outputCanvas: HTMLCanvasElement,
+  compose: (
+    ctx: CanvasRenderingContext2D,
+    results: SegmentationResults,
+    w: number,
+    h: number
+  ) => void
+): Promise<void> {
+  const seg = await getSegmenter();
+  const ctx = outputCanvas.getContext('2d');
+  if (!ctx) return;
+
+  const w = sourceVideo.videoWidth || 640;
+  const h = sourceVideo.videoHeight || 480;
+  outputCanvas.width = w;
+  outputCanvas.height = h;
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timeout = window.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(new Error('抠图超时'));
+    }, 3000);
+    seg.onResults((results) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
+      compose(ctx, results, w, h);
+      resolve();
+    });
+    seg.send({ image: sourceVideo }).catch((err) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
+      reject(err);
+    });
+  });
+}
+
 function mediapipeAssetUrl(file: string): string {
   return new URL(`../../node_modules/@mediapipe/selfie_segmentation/${file}`, import.meta.url).href;
 }
@@ -41,34 +139,27 @@ export async function applySegmentation(
   sourceVideo: HTMLVideoElement,
   outputCanvas: HTMLCanvasElement
 ): Promise<void> {
-  const seg = await getSegmenter();
-  const ctx = outputCanvas.getContext('2d');
-  if (!ctx) return;
+  return runSegmentation(sourceVideo, outputCanvas, (ctx, results, w, h) => {
+    ctx.clearRect(0, 0, w, h);
+    // 非人像区域保持绿幕，供接收端色键抠透明
+    ctx.fillStyle = '#00ff00';
+    ctx.fillRect(0, 0, w, h);
+    ctx.drawImage(renderPersonLayer(results, w, h), 0, 0, w, h);
+  });
+}
 
-  const w = sourceVideo.videoWidth || 640;
-  const h = sourceVideo.videoHeight || 480;
-  outputCanvas.width = w;
-  outputCanvas.height = h;
-
-  return new Promise((resolve, reject) => {
-    const timeout = window.setTimeout(() => reject(new Error('抠图超时')), 3000);
-    seg.onResults((results) => {
-      window.clearTimeout(timeout);
-      ctx.clearRect(0, 0, w, h);
-      // 非人像区域保持绿幕，供接收端色键抠透明
-      ctx.fillStyle = '#00ff00';
-      ctx.fillRect(0, 0, w, h);
-      ctx.save();
-      ctx.drawImage(results.segmentationMask, 0, 0, w, h);
-      ctx.globalCompositeOperation = 'source-in';
-      ctx.drawImage(results.image, 0, 0, w, h);
-      ctx.restore();
-      resolve();
-    });
-    seg.send({ image: sourceVideo }).catch((err) => {
-      window.clearTimeout(timeout);
-      reject(err);
-    });
+/** 背景虚化：模糊原图作底，叠加清晰人像 */
+export async function applySegmentationWithBlur(
+  sourceVideo: HTMLVideoElement,
+  outputCanvas: HTMLCanvasElement,
+  blurPx = 20
+): Promise<void> {
+  return runSegmentation(sourceVideo, outputCanvas, (ctx, results, w, h) => {
+    ctx.clearRect(0, 0, w, h);
+    ctx.filter = `blur(${blurPx}px)`;
+    ctx.drawImage(sourceVideo, 0, 0, w, h);
+    ctx.filter = 'none';
+    ctx.drawImage(renderPersonLayer(results, w, h), 0, 0, w, h);
   });
 }
 
@@ -109,7 +200,7 @@ export function createSegmentedStream(
     if (!processing && video.readyState >= 2) {
       processing = true;
       try {
-        await applySegmentation(video, canvas);
+        await applySegmentationWithBlur(video, canvas);
       } catch {
         const ctx = canvas.getContext('2d');
         if (ctx && video.videoWidth > 0) {

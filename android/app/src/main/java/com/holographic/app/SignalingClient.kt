@@ -1,5 +1,7 @@
 package com.holographic.app
 
+import android.os.Handler
+import android.os.Looper
 import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
@@ -19,6 +21,14 @@ class SignalingClient(private val url: String) {
     private var onLatency: ((Long) -> Unit)? = null
     private val connected = AtomicBoolean(false)
 
+    private var reconnectAttempts = 0
+    private var shouldReconnect = true
+    private val maxReconnectAttempts = 10
+    private val reconnectIntervalMs = 3000L
+    private val reconnectHandler = Handler(Looper.getMainLooper())
+    private var reconnectRunnable: Runnable? = null
+    private var lastJoinPayload: Map<String, Any?>? = null
+
     data class SignalingMessage(
         val type: String,
         val payload: JsonObject?,
@@ -28,14 +38,66 @@ class SignalingClient(private val url: String) {
     )
 
     fun connect(): Boolean {
-        val latch = CountDownLatch(1)
+        shouldReconnect = true
+        reconnectAttempts = 0
+        cancelReconnect()
+        return connectInternal(blocking = true)
+    }
+
+    fun disconnect() {
+        shouldReconnect = false
+        cancelReconnect()
+        webSocket?.close(1000, null)
+        webSocket = null
+        connected.set(false)
+    }
+
+    fun isConnected(): Boolean = connected.get()
+
+    fun onMessage(handler: (SignalingMessage) -> Unit) {
+        messageHandler = handler
+    }
+
+    fun setLatencyCallback(cb: (Long) -> Unit) {
+        onLatency = cb
+    }
+
+    fun setJoinPayload(payload: Map<String, Any?>) {
+        lastJoinPayload = payload
+    }
+
+    fun send(type: String, payload: Map<String, Any?>, to: String? = null) {
+        val msg = mutableMapOf<String, Any?>(
+            "type" to type,
+            "payload" to payload,
+            "timestamp" to System.currentTimeMillis()
+        )
+        if (to != null) msg["to"] = to
+        webSocket?.send(gson.toJson(msg))
+    }
+
+    fun startPing(intervalMs: Long = 10000) {
+        Thread {
+            while (connected.get()) {
+                send("ping", emptyMap())
+                Thread.sleep(intervalMs)
+            }
+        }.apply { isDaemon = true; start() }
+    }
+
+    private fun connectInternal(blocking: Boolean): Boolean {
+        val latch = if (blocking) CountDownLatch(1) else null
         var success = false
+
         val request = Request.Builder().url(url).build()
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 connected.set(true)
+                reconnectAttempts = 0
                 success = true
-                latch.countDown()
+                latch?.countDown()
+
+                lastJoinPayload?.let { send("join", it) }
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
@@ -57,48 +119,42 @@ class SignalingClient(private val url: String) {
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 connected.set(false)
-                latch.countDown()
+                latch?.countDown()
+                scheduleReconnect()
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 connected.set(false)
+                if (code != 1000) {
+                    scheduleReconnect()
+                }
             }
         })
-        latch.await(10, TimeUnit.SECONDS)
-        return success
+
+        if (blocking) {
+            latch?.await(10, TimeUnit.SECONDS)
+            return success
+        }
+        return true
     }
 
-    fun disconnect() {
-        webSocket?.close(1000, null)
-        connected.set(false)
-    }
+    private fun scheduleReconnect() {
+        if (!shouldReconnect || reconnectAttempts >= maxReconnectAttempts) return
 
-    fun isConnected(): Boolean = connected.get()
+        val delay = reconnectIntervalMs * (1L shl reconnectAttempts.coerceAtMost(5))
+        reconnectAttempts++
 
-    fun onMessage(handler: (SignalingMessage) -> Unit) {
-        messageHandler = handler
-    }
-
-    fun setLatencyCallback(cb: (Long) -> Unit) {
-        onLatency = cb
-    }
-
-    fun send(type: String, payload: Map<String, Any?>, to: String? = null) {
-        val msg = mutableMapOf<String, Any?>(
-            "type" to type,
-            "payload" to payload,
-            "timestamp" to System.currentTimeMillis()
-        )
-        if (to != null) msg["to"] = to
-        webSocket?.send(gson.toJson(msg))
-    }
-
-    fun startPing(intervalMs: Long = 3000) {
-        Thread {
-            while (connected.get()) {
-                send("ping", emptyMap())
-                Thread.sleep(intervalMs)
+        cancelReconnect()
+        reconnectRunnable = Runnable {
+            if (shouldReconnect) {
+                connectInternal(blocking = false)
             }
-        }.apply { isDaemon = true; start() }
+        }
+        reconnectHandler.postDelayed(reconnectRunnable!!, delay)
+    }
+
+    private fun cancelReconnect() {
+        reconnectRunnable?.let { reconnectHandler.removeCallbacks(it) }
+        reconnectRunnable = null
     }
 }

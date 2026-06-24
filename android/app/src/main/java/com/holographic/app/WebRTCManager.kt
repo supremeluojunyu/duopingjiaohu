@@ -36,10 +36,15 @@ class WebRTCManager(
     private val knownPeerIds = mutableSetOf<String>()
     private val makingOffer = mutableSetOf<String>()
 
-    private var iceServers: List<IceServer> = IceConfigFetcher.fetch(SignalingConfig.SERVER_URL)
+    private var iceServers: List<IceServer> = emptyList()
 
     fun setIceServers(servers: List<IceServer>) {
         if (servers.isNotEmpty()) iceServers = servers
+    }
+
+    private fun activeIceServers(): List<IceServer> {
+        if (iceServers.isNotEmpty()) return iceServers
+        return IceConfigFetcher.fetch(SignalingConfig.getServerUrl()).also { iceServers = it }
     }
 
     /** 加入房间后初始化，用于接收远端 offer */
@@ -113,6 +118,7 @@ class WebRTCManager(
         ensureReceiveReady()
         val pc = getOrCreatePeerConnection(publisherId)
         attachLocalTracks(pc)
+        makingOffer.add(key)
 
         pc.createOffer(object : SdpObserver {
             override fun onCreateSuccess(offer: SessionDescription?) {
@@ -120,6 +126,7 @@ class WebRTCManager(
                 pc.setLocalDescription(object : SdpObserver {
                     override fun onCreateSuccess(desc: SessionDescription?) {}
                     override fun onSetSuccess() {
+                        makingOffer.remove(key)
                         sendSdp("offer", offer, publisherId)
                         signaling.send(
                             "subscribe",
@@ -127,18 +134,23 @@ class WebRTCManager(
                         )
                     }
                     override fun onCreateFailure(error: String?) {
+                        makingOffer.remove(key)
                         Log.e(TAG, "setLocalDescription(offer) 失败: $error")
                     }
                     override fun onSetFailure(error: String?) {
+                        makingOffer.remove(key)
                         Log.e(TAG, "setLocalDescription(offer) 失败: $error")
                     }
                 }, offer)
             }
             override fun onSetSuccess() {}
             override fun onCreateFailure(error: String?) {
+                makingOffer.remove(key)
                 Log.e(TAG, "createOffer 失败: $error")
             }
-            override fun onSetFailure(error: String?) {}
+            override fun onSetFailure(error: String?) {
+                makingOffer.remove(key)
+            }
         }, MediaConstraints())
     }
 
@@ -189,6 +201,7 @@ class WebRTCManager(
         peerConnections.values.forEach { it.close() }
         peerConnections.clear()
         pendingIce.clear()
+        makingOffer.clear()
         factory?.dispose()
         factory = null
         receiveReady = false
@@ -296,7 +309,7 @@ class WebRTCManager(
         val key = peerKey(remoteId)
         peerConnections[key]?.let { return it }
 
-        val rtcConfig = PeerConnection.RTCConfiguration(iceServers).apply {
+        val rtcConfig = PeerConnection.RTCConfiguration(activeIceServers()).apply {
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
             continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
         }
@@ -345,27 +358,45 @@ class WebRTCManager(
         return pc
     }
 
-    private fun handleOffer(msg: SignalingClient.SignalingMessage) {
-        val from = msg.from ?: return
-        if (from == localDeviceId) return
+    private fun waitForSignalingStable(
+        pc: PeerConnection,
+        onStable: () -> Unit,
+        timeoutMs: Long = 5000,
+        intervalMs: Long = 50
+    ) {
+        if (pc.signalingState() == PeerConnection.SignalingState.STABLE) {
+            onStable()
+            return
+        }
 
-        ensureReceiveReady()
+        val handler = android.os.Handler(android.os.Looper.getMainLooper())
+        val startedAt = System.currentTimeMillis()
+        val check = object : Runnable {
+            override fun run() {
+                when {
+                    pc.signalingState() == PeerConnection.SignalingState.STABLE -> onStable()
+                    System.currentTimeMillis() - startedAt >= timeoutMs -> {
+                        Log.w(TAG, "等待 signaling stable 超时，继续处理 offer")
+                        onStable()
+                    }
+                    else -> handler.postDelayed(this, intervalMs)
+                }
+            }
+        }
+        handler.post(check)
+    }
 
-        val sdpJson = msg.payload?.getAsJsonObject("sdp") ?: return
-        val sdp = SessionDescription(
-            SessionDescription.Type.fromCanonicalForm(sdpJson.get("type").asString),
-            sdpJson.get("sdp").asString
-        )
-
-        val key = peerKey(from)
-        val pc = getOrCreatePeerConnection(from)
-        attachLocalTracks(pc)
-
+    private fun rollbackAndAnswerOffer(
+        pc: PeerConnection,
+        key: String,
+        sdp: SessionDescription,
+        from: String
+    ) {
         fun answerOffer() {
+            makingOffer.remove(key)
             pc.setRemoteDescription(object : SdpObserver {
                 override fun onCreateSuccess(desc: SessionDescription?) {}
                 override fun onSetSuccess() {
-                    makingOffer.remove(key)
                     drainPendingIce(from)
                     attachLocalTracks(pc)
                     pc.createAnswer(object : SdpObserver {
@@ -400,19 +431,46 @@ class WebRTCManager(
 
         val needRollback = makingOffer.contains(key) ||
             pc.signalingState() != PeerConnection.SignalingState.STABLE
-        if (needRollback) {
-            pc.setLocalDescription(object : SdpObserver {
-                override fun onCreateSuccess(desc: SessionDescription?) {}
-                override fun onSetSuccess() { answerOffer() }
-                override fun onCreateFailure(error: String?) { answerOffer() }
-                override fun onSetFailure(error: String?) {
-                    Log.e(TAG, "rollback 失败: $error")
-                    answerOffer()
-                }
-            }, SessionDescription(SessionDescription.Type.ROLLBACK, ""))
-        } else {
+        if (!needRollback) {
             answerOffer()
+            return
         }
+
+        pc.setLocalDescription(object : SdpObserver {
+            override fun onCreateSuccess(desc: SessionDescription?) {}
+            override fun onSetSuccess() {
+                if (pc.signalingState() == PeerConnection.SignalingState.STABLE) {
+                    answerOffer()
+                } else {
+                    waitForSignalingStable(pc) { answerOffer() }
+                }
+            }
+            override fun onCreateFailure(error: String?) {
+                waitForSignalingStable(pc) { answerOffer() }
+            }
+            override fun onSetFailure(error: String?) {
+                Log.e(TAG, "rollback 失败: $error")
+                waitForSignalingStable(pc) { answerOffer() }
+            }
+        }, SessionDescription(SessionDescription.Type.ROLLBACK, ""))
+    }
+
+    private fun handleOffer(msg: SignalingClient.SignalingMessage) {
+        val from = msg.from ?: return
+        if (from == localDeviceId) return
+
+        ensureReceiveReady()
+
+        val sdpJson = msg.payload?.getAsJsonObject("sdp") ?: return
+        val sdp = SessionDescription(
+            SessionDescription.Type.fromCanonicalForm(sdpJson.get("type").asString),
+            sdpJson.get("sdp").asString
+        )
+
+        val key = peerKey(from)
+        val pc = getOrCreatePeerConnection(from)
+        attachLocalTracks(pc)
+        rollbackAndAnswerOffer(pc, key, sdp, from)
     }
 
     private fun handleAnswer(msg: SignalingClient.SignalingMessage) {
@@ -428,7 +486,10 @@ class WebRTCManager(
 
         pc.setRemoteDescription(object : SdpObserver {
             override fun onCreateSuccess(desc: SessionDescription?) {}
-            override fun onSetSuccess() { drainPendingIce(from) }
+            override fun onSetSuccess() {
+                makingOffer.remove(key)
+                drainPendingIce(from)
+            }
             override fun onCreateFailure(error: String?) {}
             override fun onSetFailure(error: String?) {
                 Log.e(TAG, "setRemoteDescription(answer) 失败: $error")

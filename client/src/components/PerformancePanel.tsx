@@ -1,4 +1,5 @@
 import { StreamStats } from '../hooks/useWebRTCStats';
+import { getLatencyLevel } from '../utils/latency';
 
 interface PerformancePanelProps {
   stats: StreamStats[];
@@ -17,7 +18,7 @@ export function PerformancePanel({
     <div className="perf-panel">
       <h3>性能监控</h3>
       <div className="perf-summary">
-        <span>信令延迟 <b>{latency}ms</b></span>
+        <span>信令延迟 <b className={latency > 0 ? getLatencyLevel(latency) : ''}>{latency}ms</b></span>
         <span>在线设备 <b>{roomDeviceCount}</b></span>
         {qualityReduced && <span className="perf-warn">已自动降质</span>}
       </div>

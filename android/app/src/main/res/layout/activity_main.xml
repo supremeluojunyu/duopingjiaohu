@@ -131,9 +131,22 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
-                android:text="输入房间号或扫码加入"
+                android:text="输入信令服务器与房间号"
                 android:textColor="#6B7280"
                 android:textSize="14sp" />
+
+            <EditText
+                android:id="@+id/etServerUrl"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginTop="16dp"
+                android:hint="信令服务器 WebSocket 地址"
+                android:text="ws://192.168.1.100:9876/ws"
+                android:textColor="#F3F4F6"
+                android:textColorHint="#6B7280"
+                android:background="#1F2937"
+                android:paddingHorizontal="12dp"
+                android:inputType="textUri" />
 
             <EditText
                 android:id="@+id/etRoomId"

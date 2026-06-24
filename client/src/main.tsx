@@ -6,6 +6,7 @@ import { DeviceList } from './components/DeviceList';
 import { PerformancePanel } from './components/PerformancePanel';
 import { RoomQr } from './components/RoomQr';
 import { ApkDownloadPage } from './components/ApkDownloadPage';
+import { ConnectionStatus, ConnectionVisualState } from './components/ConnectionStatus';
 import { useScene3D } from './hooks/useScene3D';
 import { shouldReduceQuality, useWebRTCStats } from './hooks/useWebRTCStats';
 import { DEFAULT_SIGNALING_URL } from './config';
@@ -23,6 +24,64 @@ import { drawChromaKeyedFrame } from './utils/chromaKeyMaterial';
 import './styles.css';
 
 const DEFAULT_SERVER = DEFAULT_SIGNALING_URL;
+const NETWORK_CHECK_TIMEOUT_MS = 5000;
+
+type NetworkCheckResult = { ok: true } | { ok: false; message: string };
+
+async function checkNetwork(serverUrl: string): Promise<NetworkCheckResult> {
+  const trimmed = serverUrl.trim();
+  if (!trimmed) {
+    return { ok: false, message: '请填写信令服务器地址' };
+  }
+
+  try {
+    new URL(trimmed);
+  } catch {
+    return { ok: false, message: '信令地址格式无效，请使用 http://主机:端口 格式' };
+  }
+
+  if (!/^https?:\/\//i.test(trimmed)) {
+    return { ok: false, message: '信令地址需以 http:// 或 https:// 开头，请勿直接填写 ws://' };
+  }
+
+  const base = trimmed.replace(/\/$/, '');
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), NETWORK_CHECK_TIMEOUT_MS);
+
+  try {
+    const res = await fetch(`${base}/health`, { signal: controller.signal });
+    if (!res.ok) {
+      return {
+        ok: false,
+        message: `服务器响应异常 (HTTP ${res.status})，请确认信令服务已启动`,
+      };
+    }
+    return { ok: true };
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') {
+      return {
+        ok: false,
+        message: `连接超时（${NETWORK_CHECK_TIMEOUT_MS / 1000}s），请检查地址、端口及网络连通性`,
+      };
+    }
+    return {
+      ok: false,
+      message: `无法连接信令服务器 (${base})，请确认服务是否运行、frp 是否已穿透`,
+    };
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+function formatJoinError(err: unknown): string {
+  if (err instanceof Error) {
+    if (/websocket/i.test(err.message)) {
+      return `${err.message}。请确认地址使用 http:// 且 WebSocket 端点 /ws 可用`;
+    }
+    return err.message;
+  }
+  return '加入房间失败，请稍后重试';
+}
 
 function getInitialJoinForm() {
   const params = new URLSearchParams(window.location.search);
@@ -52,6 +111,13 @@ function getInitialViewMode(): '3d' | 'grid' | 'stereo' | 'relief' | 'pointcloud
   return isHologramMode() ? 'stereo' : '3d';
 }
 
+function toConnectionVisualState(
+  status: 'connected' | 'reconnecting' | 'disconnected'
+): ConnectionVisualState {
+  if (status === 'reconnecting') return 'connecting';
+  return status;
+}
+
 function App() {
   const [connected, setConnected] = useState(false);
   const [roomId, setRoomId] = useState<string | null>(null);
@@ -68,11 +134,13 @@ function App() {
   const [viewMode, setViewMode] = useState<'3d' | 'grid' | 'stereo' | 'relief' | 'pointcloud'>(getInitialViewMode);
   const [isHologram] = useState(isHologramMode);
   const [angleGuide, setAngleGuide] = useState<AngleGuide | null>(null);
-  const [signalConnected, setSignalConnected] = useState(true);
+  const [signalStatus, setSignalStatus] = useState<'connected' | 'reconnecting' | 'disconnected'>('connected');
   const [backgroundEnabled, setBackgroundEnabled] = useState(false);
   const [backgroundStream, setBackgroundStream] = useState<MediaStream | null>(null);
   const [qualityReduced, setQualityReduced] = useState(false);
   const [joinForm, setJoinForm] = useState(getInitialJoinForm);
+  const [joinError, setJoinError] = useState<string | null>(null);
+  const [joining, setJoining] = useState(false);
   const [showDownloadPage, setShowDownloadPage] = useState(isDownloadPage);
 
   const goToDownloadPage = () => {
@@ -107,6 +175,10 @@ function App() {
   const streamStats = useWebRTCStats(getPeers);
 
   useScene3D(sceneContainerRef, { mappings, remoteStreams, viewMode, backgroundStream });
+
+  const handleSignalConnection = useCallback((up: boolean) => {
+    setSignalStatus(up ? 'connected' : 'reconnecting');
+  }, []);
 
   useEffect(() => {
     for (const d of devices) {
@@ -252,31 +324,49 @@ function App() {
 
   const joinRoom = async (overrides?: Partial<typeof joinForm>) => {
     const form = { ...joinForm, ...overrides };
-    const name = form.name.trim() || (form.type === 'mobile' ? '手机' : isHologram ? '全息显示端' : '电脑');
-    const signaling = new SignalingClient(form.serverUrl);
-    signaling.setLatencyCallback(setLatency);
-    signaling.setConnectionCallback(setSignalConnected);
-    signaling.onMessage(handleSignalingMessage);
+    setJoinError(null);
+    setJoining(true);
 
-    const joinPayload = {
-      roomId: form.roomId.trim() || undefined,
-      device: {
-        name,
-        type: form.type,
-        role: form.asAdmin ? 'admin' : 'user',
-        streamTypes: ['camera'],
-        hasAlpha: segmentationEnabled,
-      },
-    };
-    signaling.setJoinPayload(joinPayload);
+    try {
+      const network = await checkNetwork(form.serverUrl);
+      if (!network.ok) {
+        setJoinError(network.message);
+        return;
+      }
 
-    await signaling.connect();
-    signalingRef.current = signaling;
+      const name = form.name.trim() || (form.type === 'mobile' ? '手机' : isHologram ? '全息显示端' : '电脑');
+      const signaling = new SignalingClient(form.serverUrl);
+      signaling.setLatencyCallback(setLatency);
+      signaling.setConnectionCallback(handleSignalConnection);
+      signaling.setReconnectExhaustedCallback(() => setSignalStatus('disconnected'));
+      signaling.onMessage(handleSignalingMessage);
 
-    const iceServers = await fetchIceServers(form.serverUrl);
-    pendingIceRef.current = iceServers;
+      const joinPayload = {
+        roomId: form.roomId.trim() || undefined,
+        device: {
+          name,
+          type: form.type,
+          role: form.asAdmin ? 'admin' : 'user',
+          streamTypes: ['camera'],
+          hasAlpha: segmentationEnabled,
+        },
+      };
+      signaling.setJoinPayload(joinPayload);
 
-    signaling.send({ type: 'join', payload: joinPayload });
+      await signaling.connect();
+      signalingRef.current = signaling;
+
+      const iceServers = await fetchIceServers(form.serverUrl);
+      pendingIceRef.current = iceServers;
+
+      signaling.send({ type: 'join', payload: joinPayload });
+    } catch (err) {
+      signalingRef.current?.disconnect();
+      signalingRef.current = null;
+      setJoinError(formatJoinError(err));
+    } finally {
+      setJoining(false);
+    }
   };
 
   const startPublishing = async (includeScreen = false) => {
@@ -457,8 +547,21 @@ function App() {
           <label>信令服务器</label>
           <input
             value={joinForm.serverUrl}
-            onChange={(e) => setJoinForm({ ...joinForm, serverUrl: e.target.value })}
+            onChange={(e) => {
+              setJoinForm({ ...joinForm, serverUrl: e.target.value });
+              setJoinError(null);
+            }}
           />
+
+          {joinError && <p className="join-error">{joinError}</p>}
+
+          {joining && (
+            <ConnectionStatus
+              state="connecting"
+              label="正在连接信令服务器..."
+              className="join-connection-status"
+            />
+          )}
 
           <label>房间号（留空自动创建）</label>
           <input
@@ -501,7 +604,9 @@ function App() {
             开启人像抠图
           </label>
 
-          <button className="btn-primary" onClick={() => void joinRoom()}>进入房间</button>
+          <button className="btn-primary" disabled={joining} onClick={() => void joinRoom()}>
+            {joining ? '连接中...' : '进入房间'}
+          </button>
 
           <button className="btn-link" type="button" onClick={goToDownloadPage}>
             下载 Android 客户端
@@ -519,7 +624,13 @@ function App() {
         <div className="hologram-status">
           <span>全息显示 · 房间 {roomId}</span>
           <span>{viewMode.toUpperCase()} · {remoteStreams.size} 路画面</span>
-          <span className={signalConnected ? '' : 'offline'}>{signalConnected ? `${latency}ms` : '重连中'}</span>
+          <span>
+            <ConnectionStatus
+              state={toConnectionVisualState(signalStatus)}
+              latency={latency}
+              label={signalStatus === 'reconnecting' ? '重连中...' : undefined}
+            />
+          </span>
         </div>
         <main className="viewport hologram-viewport">
           {viewMode === 'grid' ? (
@@ -550,9 +661,12 @@ function App() {
         <div className="toolbar-left">
           <span className="logo">◈ 全息系统</span>
           <span className="room-badge">房间 {roomId}</span>
-          <span className={`latency ${signalConnected ? '' : 'offline'}`}>
-            {signalConnected ? `${latency}ms` : '重连中...'}
-          </span>
+          <ConnectionStatus
+            state={toConnectionVisualState(signalStatus)}
+            latency={latency}
+            label={signalStatus === 'reconnecting' ? '重连中...' : undefined}
+            className="toolbar-connection"
+          />
         </div>
         <div className="toolbar-center">
           <button className={viewMode === '3d' ? 'active' : ''} onClick={() => setViewMode('3d')}>3D</button>

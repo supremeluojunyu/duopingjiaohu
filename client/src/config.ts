@@ -25,3 +25,7 @@ export const DEFAULT_SIGNALING_URL =
 
 export const RECONNECT_INTERVAL_MS = 3000;
 export const MAX_RECONNECT_ATTEMPTS = 10;
+export const PING_INTERVAL_MS = 10000;
+export const LATENCY_PING_INTERVAL_MS = 3000;
+export const LATENCY_GOOD_MS = 100;
+export const LATENCY_WARN_MS = 300;

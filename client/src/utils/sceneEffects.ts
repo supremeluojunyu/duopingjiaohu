@@ -1,15 +1,22 @@
 import * as THREE from 'three';
 
+const depthCanvas = document.createElement('canvas');
+const depthCtx = depthCanvas.getContext('2d', { willReadFrequently: true });
+
+function ensureCanvasSize(w: number, h: number): CanvasRenderingContext2D | null {
+  if (!depthCtx) return null;
+  if (depthCanvas.width !== w) depthCanvas.width = w;
+  if (depthCanvas.height !== h) depthCanvas.height = h;
+  return depthCtx;
+}
+
 /** 从视频帧采样亮度深度图 (0~1) */
 export function sampleVideoDepth(
   video: HTMLVideoElement,
   sampleW = 64,
   sampleH = 36
 ): Float32Array {
-  const canvas = document.createElement('canvas');
-  canvas.width = sampleW;
-  canvas.height = sampleH;
-  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  const ctx = ensureCanvasSize(sampleW, sampleH);
   if (!ctx || video.videoWidth === 0) return new Float32Array(sampleW * sampleH);
 
   ctx.drawImage(video, 0, 0, sampleW, sampleH);
@@ -84,8 +91,10 @@ export function createPointCloud(width: number, height: number, sampleW = 48, sa
     size: 0.04,
     vertexColors: true,
     transparent: true,
-    opacity: 0.9,
+    opacity: 0.75,
     sizeAttenuation: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
   });
 
   return { points: new THREE.Points(geometry, material), geometry, sampleW, sampleH };
@@ -97,18 +106,21 @@ export function updatePointCloud(
   geometry: THREE.BufferGeometry,
   sampleW: number,
   sampleH: number,
-  depthScale = 0.5
+  depthScale = 0.5,
+  gradientMix = 0.25
 ): void {
-  const canvas = document.createElement('canvas');
-  canvas.width = sampleW;
-  canvas.height = sampleH;
-  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  const ctx = ensureCanvasSize(sampleW, sampleH);
   if (!ctx || video.videoWidth === 0) return;
 
   ctx.drawImage(video, 0, 0, sampleW, sampleH);
   const img = ctx.getImageData(0, 0, sampleW, sampleH);
   const positions = geometry.attributes.position as THREE.BufferAttribute;
   const colors = geometry.attributes.color as THREE.BufferAttribute;
+
+  // 全息色调（与场景补光 0x60a5fa 一致）
+  const accentR = 0x60 / 255;
+  const accentG = 0xa5 / 255;
+  const accentB = 0xfa / 255;
 
   for (let i = 0; i < sampleW * sampleH; i++) {
     const o = i * 4;
@@ -117,7 +129,14 @@ export function updatePointCloud(
     const b = img.data[o + 2] / 255;
     const lum = 0.299 * r + 0.587 * g + 0.114 * b;
     positions.setZ(i, lum * depthScale);
-    colors.setXYZ(i, r, g, b);
+
+    const t = lum * gradientMix;
+    colors.setXYZ(
+      i,
+      r * (1 - t) + accentR * t,
+      g * (1 - t) + accentG * t,
+      b * (1 - t) + accentB * t
+    );
   }
   positions.needsUpdate = true;
   colors.needsUpdate = true;

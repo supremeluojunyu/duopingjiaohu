@@ -238,6 +238,27 @@ export class WebRTCManager {
     await Promise.all([...remoteIds].map((id) => this.offerStreamToPeer(id, 'camera')));
   }
 
+  private waitForSignalingStable(pc: RTCPeerConnection, timeoutMs = 5000): Promise<void> {
+    if (pc.signalingState === 'stable') return Promise.resolve();
+
+    return new Promise((resolve) => {
+      const timer = window.setTimeout(() => {
+        pc.removeEventListener('signalingstatechange', onChange);
+        resolve();
+      }, timeoutMs);
+
+      const onChange = () => {
+        if (pc.signalingState === 'stable') {
+          window.clearTimeout(timer);
+          pc.removeEventListener('signalingstatechange', onChange);
+          resolve();
+        }
+      };
+
+      pc.addEventListener('signalingstatechange', onChange);
+    });
+  }
+
   private createPeerConnection(remoteId: string, streamType: StreamType): RTCPeerConnection {
     const pc = new RTCPeerConnection({ iceServers: this.iceServers });
     const key = `${remoteId}:${streamType}`;
@@ -308,10 +329,14 @@ export class WebRTCManager {
         // 处理 offer 冲突：对方发起 offer 时回滚本地 offer，作为应答方
         const offerCollision = this.makingOffer.has(key) || pc.signalingState !== 'stable';
         if (offerCollision) {
+          let rollbackFailed = false;
           try {
             await pc.setLocalDescription({ type: 'rollback' } as RTCSessionDescriptionInit);
           } catch {
-            /* 部分环境不支持 rollback，继续尝试 */
+            rollbackFailed = true;
+          }
+          if (rollbackFailed || pc.signalingState !== 'stable') {
+            await this.waitForSignalingStable(pc);
           }
         }
 

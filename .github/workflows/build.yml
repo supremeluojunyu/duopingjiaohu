@@ -155,7 +155,13 @@ jobs:
           if [ -d release/linux ]; then cp release/linux/* release-bundle/; fi
           if [ -d release/android ]; then
             VERSION="${GITHUB_REF_NAME#v}"
-            cp release/android/app-debug.apk "release-bundle/holographic-${VERSION}.apk"
+            APK="$(find release/android -name '*.apk' | head -1)"
+            if [ -n "$APK" ]; then
+              cp "$APK" "release-bundle/holographic-${VERSION}.apk"
+            else
+              echo "Warning: Android APK artifact not found"
+              ls -R release/android || true
+            fi
           fi
           ls -lah release-bundle/
 

@@ -442,15 +442,15 @@ class WebRTCManager(
                 if (pc.signalingState() == PeerConnection.SignalingState.STABLE) {
                     answerOffer()
                 } else {
-                    waitForSignalingStable(pc) { answerOffer() }
+                    waitForSignalingStable(pc, onStable = { answerOffer() })
                 }
             }
             override fun onCreateFailure(error: String?) {
-                waitForSignalingStable(pc) { answerOffer() }
+                waitForSignalingStable(pc, onStable = { answerOffer() })
             }
             override fun onSetFailure(error: String?) {
                 Log.e(TAG, "rollback 失败: $error")
-                waitForSignalingStable(pc) { answerOffer() }
+                waitForSignalingStable(pc, onStable = { answerOffer() })
             }
         }, SessionDescription(SessionDescription.Type.ROLLBACK, ""))
     }

@@ -1,10 +1,10 @@
 {
-  "versionName": "0.1.5",
-  "versionCode": 6,
-  "fileName": "holographic-0.1.5.apk",
-  "fileSize": 98729098,
-  "sha256": "c95c1932d67ee5e0aab8c5d2ffaff9efbf353c560f35c0f6d48c4b98cf374a37",
-  "updatedAt": "2026-06-10T08:40:36.000Z",
+  "versionName": "0.1.7",
+  "versionCode": 7,
+  "fileName": "holographic-0.1.7.apk",
+  "fileSize": 98729254,
+  "sha256": "6dfa3655b32712e9c55cc9986aacebf69008b22307c8b8dab4b1cf92d8e455e3",
+  "updatedAt": "2026-06-24T12:31:32.000Z",
   "available": true,
-  "releaseNotes": "Android 客户端更新"
+  "releaseNotes": "v0.1.7: 重连/抠图边缘/信令优化/Android WebRTC 修复"
 }

@@ -1,10 +1,10 @@
 {
-  "versionName": "0.1.8.2",
-  "versionCode": 9,
-  "fileName": "holographic-0.1.8.2.apk",
+  "versionName": "0.1.8.4",
+  "versionCode": 10,
+  "fileName": "holographic-0.1.8.4.apk",
   "fileSize": 98729254,
-  "sha256": "1b198c00f7a572930c4fb5b1203421f50e3ec10df1c5b70126191e5816eb7e20",
-  "updatedAt": "2026-06-25T12:20:31.000Z",
+  "sha256": "c63cf8b8c439db1bd10d937c6230d4f3e05b62bc88bd928631aff758d4e185f3",
+  "updatedAt": "2026-06-25T12:50:54.000Z",
   "available": true,
-  "releaseNotes": "v0.1.8.2: 修复 EXE 默认公网信令地址，投屏稳定性优化"
+  "releaseNotes": "Android 客户端更新"
 }

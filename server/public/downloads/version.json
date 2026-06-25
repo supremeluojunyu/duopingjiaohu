@@ -1,10 +1,10 @@
 {
-  "versionName": "0.1.7",
-  "versionCode": 7,
-  "fileName": "holographic-0.1.7.apk",
+  "versionName": "0.1.8",
+  "versionCode": 8,
+  "fileName": "holographic-0.1.8.apk",
   "fileSize": 98729254,
-  "sha256": "6dfa3655b32712e9c55cc9986aacebf69008b22307c8b8dab4b1cf92d8e455e3",
-  "updatedAt": "2026-06-24T12:31:32.000Z",
+  "sha256": "548efa1135adb94222c55c22b35ec1bab3d1b012c1a7e55b124001d8dcdf4ea1",
+  "updatedAt": "2026-06-25T11:44:37.000Z",
   "available": true,
-  "releaseNotes": "v0.1.7: 重连/抠图边缘/信令优化/Android WebRTC 修复"
+  "releaseNotes": "v0.1.8: 修复手机投屏到电脑、重连后 re-offer、Web/3D 性能优化"
 }

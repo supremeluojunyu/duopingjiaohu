@@ -114,7 +114,6 @@ jobs:
 
   build-android:
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -123,18 +122,31 @@ jobs:
           java-version: '17'
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
-      - name: Install Android SDK platform 35
-        run: sdkmanager "platforms;android-35"
-      - name: Build debug APK
+      - name: Install Android SDK components
         run: |
-          cd android
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager "platform-tools" "platforms;android-35" "platforms;android-34" "build-tools;35.0.0" "build-tools;34.0.0"
+      - name: Ensure MediaPipe model
+        run: bash android/scripts/download-model.sh
+      - name: Use official Gradle distribution (CI)
+        run: |
+          sed -i 's|https\\://mirrors.cloud.tencent.com/gradle/gradle-|https\\://services.gradle.org/distributions/gradle-|' android/gradle/wrapper/gradle-wrapper.properties
+      - name: Build debug APK
+        working-directory: android
+        env:
+          GRADLE_OPTS: -Dorg.gradle.jvmargs=-Xmx4g -Dorg.gradle.daemon=false
+        run: |
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon
+          ./gradlew assembleDebug --no-daemon -x lint --stacktrace
+      - name: Verify APK output
+        run: |
+          ls -lah android/app/build/outputs/apk/debug/
+          test -f android/app/build/outputs/apk/debug/app-debug.apk
       - uses: actions/upload-artifact@v4
         with:
           name: holographic-android
           path: android/app/build/outputs/apk/debug/app-debug.apk
-          if-no-files-found: warn
+          if-no-files-found: error
 
   release:
     needs: [build-windows, build-linux, build-android]
@@ -159,7 +171,6 @@ jobs:
 
       - uses: actions/download-artifact@v4
         if: needs.build-android.result == 'success'
-        continue-on-error: true
         with:
           name: holographic-android
           path: release/android

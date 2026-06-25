@@ -94,6 +94,15 @@ export function generateRoomCode(): string {
   return code;
 }
 
+/** 统一房间号格式（大写），用于多端加入同一房间 */
+export function normalizeRoomId(roomId: string): string {
+  const normalized = roomId.trim().toUpperCase();
+  if (!/^[A-Z0-9]{4,12}$/.test(normalized)) {
+    throw new Error('房间号格式无效（4-12位字母或数字）');
+  }
+  return normalized;
+}
+
 export function createDefaultMapping(
   deviceId: string,
   streamType: StreamType,

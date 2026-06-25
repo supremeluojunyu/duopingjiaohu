@@ -13,6 +13,7 @@ import {
   StreamType,
   createDefaultMapping,
   generateRoomCode,
+  normalizeRoomId,
 } from './types.js';
 
 interface ConnectedClient {
@@ -48,16 +49,29 @@ export class RoomManager {
   }
 
   getOrCreateRoom(roomId?: string, password?: string): RoomState {
-    if (roomId) {
-      const existing = this.getRoom(roomId);
-      if (existing) {
-        if (existing.password && existing.password !== password) {
-          throw new Error('房间密码错误');
-        }
-        return existing;
-      }
+    if (!roomId?.trim()) {
+      return this.createRoom(password);
     }
-    return this.createRoom(password);
+
+    const normalized = normalizeRoomId(roomId);
+    const existing = this.rooms.get(normalized);
+    if (existing) {
+      if (existing.password && existing.password !== password) {
+        throw new Error('房间密码错误');
+      }
+      return existing;
+    }
+
+    const room: RoomState = {
+      id: normalized,
+      password,
+      devices: [],
+      mappings: [],
+      presets: [],
+      createdAt: Date.now(),
+    };
+    this.rooms.set(normalized, room);
+    return room;
   }
 
   registerClient(ws: WebSocket, roomId: string, deviceId: string): void {
@@ -93,14 +107,11 @@ export class RoomManager {
       streamTypes?: StreamType[];
       hasAlpha?: boolean;
     },
-    password?: string,
-    requestedRoomId?: string
+    password?: string
   ): { room: RoomState; device: DeviceInfo } {
-    const room = requestedRoomId
-      ? this.getOrCreateRoom(requestedRoomId, password)
-      : roomId
-        ? this.getOrCreateRoom(roomId, password)
-        : this.createRoom(password);
+    const room = roomId?.trim()
+      ? this.getOrCreateRoom(roomId, password)
+      : this.createRoom(password);
 
     const mobileCount = room.devices.filter((d) => d.type === 'mobile').length;
     const desktopCount = room.devices.filter((d) => d.type === 'desktop').length;

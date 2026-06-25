@@ -207,6 +207,7 @@ function App() {
       case 'joined': {
         const payload = msg.payload;
         setRoomId(payload.roomId as string);
+        setJoinForm((f) => ({ ...f, roomId: payload.roomId as string }));
         setDevice(payload.device as DeviceInfo);
         const allDevices = payload.devices as DeviceInfo[];
         setDevices(allDevices);
@@ -220,6 +221,16 @@ function App() {
 
         const dev = payload.device as DeviceInfo;
         if (signalingRef.current) {
+          signalingRef.current.setJoinPayload({
+            roomId: payload.roomId as string,
+            device: {
+              name: dev.name,
+              type: dev.type,
+              role: dev.role,
+              streamTypes: dev.streamTypes,
+              hasAlpha: dev.hasAlpha,
+            },
+          });
           const webrtc = new WebRTCManager(signalingRef.current, dev.id);
           if (pendingIceRef.current) {
             webrtc.setIceServers(pendingIceRef.current);
@@ -374,7 +385,7 @@ function App() {
       signaling.onMessage(handleSignalingMessage);
 
       const joinPayload = {
-        roomId: form.roomId.trim() || undefined,
+        roomId: form.roomId.trim().toUpperCase() || undefined,
         device: {
           name,
           type: form.type,

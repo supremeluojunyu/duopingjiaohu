@@ -393,12 +393,17 @@ class WebRTCManager(
         val key = peerKey(remoteId)
         peerConnections[key]?.let { return it }
 
+        val peerFactory = factory
+        if (peerFactory == null) {
+            throw IllegalStateException("PeerConnectionFactory 未初始化")
+        }
+
         val rtcConfig = PeerConnection.RTCConfiguration(activeIceServers()).apply {
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
             continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
         }
 
-        val pc = factory!!.createPeerConnection(rtcConfig, object : PeerConnection.Observer {
+        val pc = peerFactory.createPeerConnection(rtcConfig, object : PeerConnection.Observer {
             override fun onIceCandidate(candidate: IceCandidate?) {
                 candidate ?: return
                 signaling.send(

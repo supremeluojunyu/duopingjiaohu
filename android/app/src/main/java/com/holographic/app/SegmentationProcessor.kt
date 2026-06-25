@@ -42,9 +42,13 @@ class SegmentationProcessor(private val context: Context) : VideoProcessor {
     private var enabled = false
     private var lastProcessTimeMs = 0L
 
-    fun isReady(): Boolean = segmenter != null
+    fun isReady(): Boolean {
+        if (segmenter == null) ensureSegmenter()
+        return segmenter != null
+    }
 
-    init {
+    private fun ensureSegmenter() {
+        if (segmenter != null) return
         initSegmenter()
     }
 
@@ -87,7 +91,13 @@ class SegmentationProcessor(private val context: Context) : VideoProcessor {
             return
         }
 
-        if (!enabled || segmenter == null) {
+        if (!enabled) {
+            targetSink.onFrame(frame)
+            return
+        }
+
+        ensureSegmenter()
+        if (segmenter == null) {
             targetSink.onFrame(frame)
             return
         }

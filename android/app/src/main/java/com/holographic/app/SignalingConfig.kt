@@ -1,7 +1,7 @@
 package com.holographic.app
 
 object SignalingConfig {
-    private const val DEFAULT_SERVER_URL = "ws://192.168.1.100:9876/ws"
+    private const val DEFAULT_SERVER_URL = "ws://124.220.4.69:9000/ws"
 
     private var serverUrl: String? = null
 

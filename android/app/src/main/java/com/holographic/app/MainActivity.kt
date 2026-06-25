@@ -67,7 +67,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             segmentationEnabled = checked
         }
         binding.btnJoinManual.setOnClickListener {
-            val roomId = binding.etRoomId.text.toString().trim()
+            val roomId = binding.etRoomId.text.toString().trim().uppercase()
             if (roomId.isNotEmpty()) joinRoom(roomId)
             else Toast.makeText(this, "请输入房间号", Toast.LENGTH_SHORT).show()
         }
@@ -88,7 +88,13 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
 
     private fun handleScanContent(content: String) {
         when (val parsed = QrContentParser.parse(content)) {
-            is QrContentParser.ScanResult.JoinRoom -> joinRoom(parsed.roomId)
+            is QrContentParser.ScanResult.JoinRoom -> {
+                parsed.serverUrl?.let { url ->
+                    binding.etServerUrl.setText(url)
+                    SignalingConfig.setServerUrl(url)
+                }
+                joinRoom(parsed.roomId)
+            }
             is QrContentParser.ScanResult.DownloadPage -> checkForAppUpdate(showNoUpdateToast = true)
         }
     }
@@ -137,6 +143,11 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     }
 
     private fun joinRoom(roomId: String) {
+        val normalizedRoomId = roomId.trim().uppercase()
+        if (normalizedRoomId.isEmpty()) {
+            Toast.makeText(this, "请输入房间号", Toast.LENGTH_SHORT).show()
+            return
+        }
         if (!PermissionsHelper.allGranted(this)) {
             requestPermissionsIfNeeded()
             return
@@ -177,7 +188,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                 client.onMessage { msg -> runOnUiThread { handleSignalingMessage(msg) } }
 
                 val joinPayload = mapOf(
-                    "roomId" to roomId,
+                    "roomId" to normalizedRoomId,
                     "device" to mapOf(
                         "name" to android.os.Build.MODEL,
                         "type" to "mobile",
@@ -192,7 +203,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                 signalingClient = client
 
                 runOnUiThread {
-                    binding.tvRoomId.text = "房间: $roomId"
+                    binding.tvRoomId.text = "房间: $normalizedRoomId"
                     binding.statusBar.visibility = View.VISIBLE
                     binding.joinPanel.visibility = View.GONE
                     binding.controlBar.visibility = View.VISIBLE
@@ -282,9 +293,26 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             "joined" -> {
                 val device = msg.payload?.getAsJsonObject("device")
                 localDeviceId = device?.get("id")?.asString
-                val roomId = msg.payload?.get("roomId")?.asString
-                binding.tvRoomId.text = "房间: $roomId"
+                val serverRoomId = msg.payload?.get("roomId")?.asString
+                binding.tvRoomId.text = "房间: $serverRoomId"
                 binding.tvLatency.text = "已连接"
+
+                // 重连时使用服务端确认的房间号，避免与电脑端不一致
+                serverRoomId?.let { rid ->
+                    binding.etRoomId.setText(rid)
+                    signalingClient?.setJoinPayload(
+                        mapOf(
+                            "roomId" to rid,
+                            "device" to mapOf(
+                                "name" to android.os.Build.MODEL,
+                                "type" to "mobile",
+                                "role" to "user",
+                                "streamTypes" to listOf("camera"),
+                                "hasAlpha" to segmentationEnabled
+                            )
+                        )
+                    )
+                }
 
                 knownDeviceIds.clear()
                 msg.payload?.getAsJsonArray("devices")?.forEach { el ->

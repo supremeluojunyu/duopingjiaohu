@@ -46,8 +46,7 @@ export function handleMessage(ws: WebSocket, raw: WebSocket.RawData): void {
           ws,
           roomId,
           device,
-          password,
-          roomId
+          password
         );
 
         roomManager.sendToClient(ws, {

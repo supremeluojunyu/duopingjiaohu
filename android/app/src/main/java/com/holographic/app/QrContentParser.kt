@@ -12,15 +12,16 @@ object QrContentParser {
             if (page == "download") {
                 return ScanResult.DownloadPage(uri.getQueryParameter("server"))
             }
-            uri.getQueryParameter("room")?.takeIf { it.isNotBlank() }?.let {
-                return ScanResult.JoinRoom(it.uppercase())
+            uri.getQueryParameter("room")?.takeIf { it.isNotBlank() }?.let { room ->
+                val server = uri.getQueryParameter("server")?.takeIf { it.isNotBlank() }
+                return ScanResult.JoinRoom(room.uppercase(), server)
             }
         }
-        return ScanResult.JoinRoom(trimmed.uppercase())
+        return ScanResult.JoinRoom(trimmed.uppercase(), null)
     }
 
     sealed class ScanResult {
-        data class JoinRoom(val roomId: String) : ScanResult()
+        data class JoinRoom(val roomId: String, val serverUrl: String? = null) : ScanResult()
         data class DownloadPage(val serverUrl: String?) : ScanResult()
     }
 }

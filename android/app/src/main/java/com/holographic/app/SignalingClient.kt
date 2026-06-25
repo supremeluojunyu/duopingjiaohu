@@ -19,6 +19,7 @@ class SignalingClient(private val url: String) {
         .build()
     private var messageHandler: ((SignalingMessage) -> Unit)? = null
     private var onLatency: ((Long) -> Unit)? = null
+    private var onReconnectExhausted: (() -> Unit)? = null
     private val connected = AtomicBoolean(false)
 
     private var reconnectAttempts = 0
@@ -60,6 +61,10 @@ class SignalingClient(private val url: String) {
 
     fun setLatencyCallback(cb: (Long) -> Unit) {
         onLatency = cb
+    }
+
+    fun setReconnectExhaustedCallback(cb: () -> Unit) {
+        onReconnectExhausted = cb
     }
 
     fun setJoinPayload(payload: Map<String, Any?>) {
@@ -139,7 +144,14 @@ class SignalingClient(private val url: String) {
     }
 
     private fun scheduleReconnect() {
-        if (!shouldReconnect || reconnectAttempts >= maxReconnectAttempts) return
+        if (!shouldReconnect) return
+
+        if (reconnectAttempts >= maxReconnectAttempts) {
+            shouldReconnect = false
+            cancelReconnect()
+            onReconnectExhausted?.invoke()
+            return
+        }
 
         val delay = reconnectIntervalMs * (1L shl reconnectAttempts.coerceAtMost(5))
         reconnectAttempts++

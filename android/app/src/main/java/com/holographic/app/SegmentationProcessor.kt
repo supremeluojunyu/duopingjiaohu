@@ -25,9 +25,9 @@ class SegmentationProcessor(private val context: Context) : VideoProcessor {
     companion object {
         private const val TAG = "SegmentationProcessor"
         private const val MODEL = "selfie_segmenter.tflite"
-        private const val PROCESS_WIDTH = 640
-        private const val PROCESS_HEIGHT = 360
-        private const val MIN_PROCESS_INTERVAL_MS = 100L
+        private const val PROCESS_WIDTH = 320
+        private const val PROCESS_HEIGHT = 180
+        private const val MIN_PROCESS_INTERVAL_MS = 150L
         private const val MASK_BLUR_RADIUS = 4f
     }
 

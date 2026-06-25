@@ -8,7 +8,7 @@ import { RoomQr } from './components/RoomQr';
 import { ApkDownloadPage } from './components/ApkDownloadPage';
 import { ConnectionStatus, ConnectionVisualState } from './components/ConnectionStatus';
 import { useScene3D } from './hooks/useScene3D';
-import { shouldReduceQuality, useWebRTCStats } from './hooks/useWebRTCStats';
+import { useWebRTCStats } from './hooks/useWebRTCStats';
 import { DEFAULT_SIGNALING_URL } from './config';
 import { fetchIceServers } from './services/ice';
 import { SignalingClient } from './services/signaling';
@@ -137,7 +137,6 @@ function App() {
   const [signalStatus, setSignalStatus] = useState<'connected' | 'reconnecting' | 'disconnected'>('connected');
   const [backgroundEnabled, setBackgroundEnabled] = useState(false);
   const [backgroundStream, setBackgroundStream] = useState<MediaStream | null>(null);
-  const [qualityReduced, setQualityReduced] = useState(false);
   const [joinForm, setJoinForm] = useState(getInitialJoinForm);
   const [joinError, setJoinError] = useState<string | null>(null);
   const [joining, setJoining] = useState(false);
@@ -172,7 +171,7 @@ function App() {
     () => webrtcRef.current?.getPeerConnections() ?? null,
     []
   );
-  const streamStats = useWebRTCStats(getPeers);
+  const { stats: streamStats, qualityReduced } = useWebRTCStats(getPeers);
 
   useScene3D(sceneContainerRef, { mappings, remoteStreams, viewMode, backgroundStream });
 
@@ -188,12 +187,8 @@ function App() {
 
   // 网络质量自适应降质
   useEffect(() => {
-    const reduce = shouldReduceQuality(streamStats);
-    if (reduce !== qualityReduced) {
-      setQualityReduced(reduce);
-      webrtcRef.current?.setQualityMode(reduce);
-    }
-  }, [streamStats, qualityReduced]);
+    webrtcRef.current?.setQualityMode(qualityReduced);
+  }, [qualityReduced]);
 
   const handleSignalingMessage = useCallback((msg: import('./types').SignalingMessage) => {
     switch (msg.type) {
@@ -201,12 +196,16 @@ function App() {
         const payload = msg.payload;
         setRoomId(payload.roomId as string);
         setDevice(payload.device as DeviceInfo);
-        setDevices(payload.devices as DeviceInfo[]);
+        const allDevices = payload.devices as DeviceInfo[];
+        setDevices(allDevices);
         setMappings(payload.mappings as StreamMapping[]);
         setPresets(payload.presets as ScenePreset[]);
         setConnected(true);
 
-        // 加入后立即初始化 WebRTC，便于仅接收不推流
+        webrtcRef.current?.destroy();
+        webrtcRef.current = null;
+        setRemoteStreams(new Map());
+
         const dev = payload.device as DeviceInfo;
         if (signalingRef.current) {
           const webrtc = new WebRTCManager(signalingRef.current, dev.id);
@@ -214,7 +213,27 @@ function App() {
             webrtc.setIceServers(pendingIceRef.current);
           }
           webrtc.setRemoteStreamCallback(setRemoteStreams);
+          webrtc.setPeerFailedCallback((publisherId) => {
+            setSubscribed((prev) => {
+              const next = new Set(prev);
+              next.delete(publisherId);
+              return next;
+            });
+            setPublishingDevices((prev) => {
+              const next = new Set(prev);
+              next.delete(publisherId);
+              return next;
+            });
+          });
           webrtcRef.current = webrtc;
+
+          const mobileIds: string[] = [];
+          for (const d of allDevices) {
+            if (d.id === dev.id || !d.online || d.type !== 'mobile') continue;
+            webrtc.noteAwaitingPublisher(d.id, 'camera');
+            mobileIds.push(d.id);
+          }
+          setSubscribed(new Set(mobileIds));
         }
         break;
       }
@@ -227,6 +246,7 @@ function App() {
       case 'peer_left': {
         const id = msg.payload.deviceId as string;
         setDevices((prev) => prev.filter((d) => d.id !== id));
+        webrtcRef.current?.unsubscribe(id, 'camera');
         setSubscribed((prev) => {
           const next = new Set(prev);
           next.delete(id);
@@ -373,7 +393,22 @@ function App() {
     if (!signalingRef.current || !device) return;
     if (!webrtcRef.current) {
       webrtcRef.current = new WebRTCManager(signalingRef.current, device.id);
+      if (pendingIceRef.current) {
+        webrtcRef.current.setIceServers(pendingIceRef.current);
+      }
       webrtcRef.current.setRemoteStreamCallback(setRemoteStreams);
+      webrtcRef.current.setPeerFailedCallback((publisherId) => {
+        setSubscribed((prev) => {
+          const next = new Set(prev);
+          next.delete(publisherId);
+          return next;
+        });
+        setPublishingDevices((prev) => {
+          const next = new Set(prev);
+          next.delete(publisherId);
+          return next;
+        });
+      });
     }
 
     const streamTypes: ('camera' | 'screen')[] = includeScreen ? ['camera', 'screen'] : ['camera'];

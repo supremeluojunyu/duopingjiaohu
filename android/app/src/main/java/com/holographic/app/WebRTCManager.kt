@@ -14,7 +14,7 @@ class WebRTCManager(
     private val signaling: SignalingClient,
     private val localRenderer: SurfaceViewRenderer,
     private val remoteRenderer: SurfaceViewRenderer?,
-    private val localDeviceId: String,
+    private var localDeviceId: String,
     private val eglBase: EglBase
 ) {
     companion object {
@@ -35,6 +35,7 @@ class WebRTCManager(
     private var receiveReady = false
     private val knownPeerIds = mutableSetOf<String>()
     private val makingOffer = mutableSetOf<String>()
+    private var localRendererInitialized = false
 
     private var iceServers: List<IceServer> = emptyList()
 
@@ -50,12 +51,23 @@ class WebRTCManager(
     /** 加入房间后初始化，用于接收远端 offer */
     fun ensureReceiveReady() {
         if (receiveReady) return
-        initializeFactory()
-        remoteRenderer?.init(eglBase.eglBaseContext, null)
-        remoteRenderer?.setMirror(false)
-        remoteRenderer?.setEnableHardwareScaler(true)
-        receiveReady = true
-        Log.i(TAG, "接收通道已就绪")
+        try {
+            initializeFactory()
+            remoteRenderer?.let { renderer ->
+                renderer.init(eglBase.eglBaseContext, null)
+                renderer.setMirror(false)
+                renderer.setEnableHardwareScaler(true)
+            }
+            receiveReady = true
+            Log.i(TAG, "接收通道已就绪")
+        } catch (e: Exception) {
+            Log.e(TAG, "接收通道初始化失败", e)
+        }
+    }
+
+    fun updateLocalDeviceId(newId: String) {
+        localDeviceId = newId
+        knownPeerIds.remove(newId)
     }
 
     fun setKnownPeerIds(ids: Collection<String>) {
@@ -69,45 +81,68 @@ class WebRTCManager(
 
     fun startPublishing(enableSegmentation: Boolean): Boolean {
         if (isPublishing) return true
-        ensureReceiveReady()
 
-        localRenderer.init(eglBase.eglBaseContext, null)
-        localRenderer.setMirror(true)
-        localRenderer.setEnableHardwareScaler(true)
+        return try {
+            ensureReceiveReady()
+            val peerFactory = factory
+            if (peerFactory == null) {
+                Log.e(TAG, "PeerConnectionFactory 未初始化")
+                return false
+            }
 
-        val capturer = createCameraCapturer() ?: run {
-            Log.e(TAG, "无法打开摄像头")
-            return false
+            if (!localRendererInitialized) {
+                localRenderer.init(eglBase.eglBaseContext, null)
+                localRenderer.setMirror(true)
+                localRenderer.setEnableHardwareScaler(true)
+                localRendererInitialized = true
+            }
+
+            val capturer = createCameraCapturer() ?: run {
+                Log.e(TAG, "无法打开摄像头")
+                return false
+            }
+            videoCapturer = capturer
+
+            val source = peerFactory.createVideoSource(capturer.isScreencast)
+            videoSource = source
+            capturer.initialize(
+                SurfaceTextureHelper.create("CaptureThread", eglBase.eglBaseContext),
+                context,
+                source.capturerObserver
+            )
+            capturer.startCapture(1280, 720, 30)
+
+            if (enableSegmentation) {
+                try {
+                    segmentationProcessor = SegmentationProcessor(context).also { it.setEnabled(true) }
+                    source.setVideoProcessor(segmentationProcessor)
+                    Log.i(TAG, "MediaPipe 人像抠图已启用")
+                } catch (e: Exception) {
+                    Log.e(TAG, "MediaPipe 初始化失败，回退普通推流", e)
+                    segmentationProcessor = null
+                }
+            }
+
+            val videoTrack = peerFactory.createVideoTrack("video0", source)
+            localVideoTrack = videoTrack
+            videoTrack.addSink(localRenderer)
+
+            val audioConstraints = MediaConstraints()
+            val aSource = peerFactory.createAudioSource(audioConstraints)
+            audioSource = aSource
+            localAudioTrack = peerFactory.createAudioTrack("audio0", aSource)
+
+            isPublishing = true
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                renegotiateAllPeers()
+            }, 300)
+            Log.i(TAG, "推流已开始")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "startPublishing 失败", e)
+            stopPublishing()
+            false
         }
-        videoCapturer = capturer
-
-        videoSource = factory!!.createVideoSource(capturer.isScreencast)
-        capturer.initialize(
-            SurfaceTextureHelper.create("CaptureThread", eglBase.eglBaseContext),
-            context,
-            videoSource!!.capturerObserver
-        )
-        capturer.startCapture(1280, 720, 30)
-
-        if (enableSegmentation) {
-            segmentationProcessor = SegmentationProcessor(context).also { it.setEnabled(true) }
-            videoSource!!.setVideoProcessor(segmentationProcessor)
-            Log.i(TAG, "MediaPipe 人像抠图已启用")
-        }
-
-        localVideoTrack = factory!!.createVideoTrack("video0", videoSource!!)
-        localVideoTrack!!.addSink(localRenderer)
-
-        val audioConstraints = MediaConstraints()
-        audioSource = factory!!.createAudioSource(audioConstraints)
-        localAudioTrack = factory!!.createAudioTrack("audio0", audioSource!!)
-
-        isPublishing = true
-        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-            renegotiateAllPeers()
-        }, 300)
-        Log.i(TAG, "推流已开始")
-        return true
     }
 
     fun subscribe(publisherId: String) {
@@ -205,6 +240,7 @@ class WebRTCManager(
         factory?.dispose()
         factory = null
         receiveReady = false
+        localRendererInitialized = false
         localRenderer.release()
         remoteRenderer?.release()
     }
@@ -297,7 +333,7 @@ class WebRTCManager(
         }, MediaConstraints())
     }
 
-    private fun renegotiateAllPeers() {
+    fun renegotiateAllPeers() {
         val targets = (peerConnections.keys.map { it.substringBefore(':') } + knownPeerIds)
             .filter { it != localDeviceId }
             .distinct()

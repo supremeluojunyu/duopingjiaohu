@@ -162,6 +162,16 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                 client.setLatencyCallback { ms ->
                     runOnUiThread { binding.tvLatency.text = "${ms}ms" }
                 }
+                client.setReconnectExhaustedCallback {
+                    runOnUiThread {
+                        binding.tvLatency.text = "已断开"
+                        Toast.makeText(
+                            this,
+                            "信令连接已断开，请检查网络后重新加入房间",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
                 client.startPing()
 
                 client.onMessage { msg -> runOnUiThread { handleSignalingMessage(msg) } }
@@ -229,11 +239,16 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             sensorManager?.unregisterListener(this)
         } else {
             ensureWebRtcManager()
-            webrtcManager?.setKnownPeerIds(knownDeviceIds)
+            val manager = webrtcManager
+            if (manager == null) {
+                Toast.makeText(this, "连接未就绪，请稍后再试", Toast.LENGTH_SHORT).show()
+                return
+            }
+            manager.setKnownPeerIds(knownDeviceIds)
             binding.localPreview.visibility = View.VISIBLE
             binding.tvEmptyHint.visibility = View.GONE
             binding.remotePreview.visibility = View.VISIBLE
-            if (!webrtcManager!!.startPublishing(segmentationEnabled)) {
+            if (!manager.startPublishing(segmentationEnabled)) {
                 binding.localPreview.visibility = View.GONE
                 binding.tvEmptyHint.visibility = View.VISIBLE
                 Toast.makeText(this, "无法打开摄像头，请检查权限", Toast.LENGTH_LONG).show()
@@ -266,12 +281,30 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                 msg.payload?.getAsJsonArray("devices")?.forEach { el ->
                     el.asJsonObject.get("id")?.asString?.let { knownDeviceIds.add(it) }
                 }
-                ensureWebRtcManager()
+                localDeviceId?.let { id ->
+                    if (webrtcManager != null) {
+                        webrtcManager?.updateLocalDeviceId(id)
+                    } else {
+                        ensureWebRtcManager()
+                    }
+                }
+                val shouldRenegotiate = isPublishing
                 Thread {
                     val iceServers = IceConfigFetcher.fetch(SignalingConfig.getServerUrl())
                     runOnUiThread {
                         webrtcManager?.setIceServers(iceServers)
                         webrtcManager?.setKnownPeerIds(knownDeviceIds)
+                        if (shouldRenegotiate) {
+                            signalingClient?.send(
+                                "publish_started",
+                                mapOf("hasAlpha" to segmentationEnabled)
+                            )
+                            signalingClient?.send(
+                                "device_update",
+                                mapOf("hasAlpha" to segmentationEnabled)
+                            )
+                            webrtcManager?.renegotiateAllPeers()
+                        }
                     }
                 }.start()
             }

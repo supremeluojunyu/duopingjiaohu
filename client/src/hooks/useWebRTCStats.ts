@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 export interface StreamStats {
   deviceId: string;
@@ -12,15 +12,45 @@ export interface StreamStats {
   codec: string;
 }
 
-let badStreak = 0;
-let goodStreak = 0;
-let qualityReduced = false;
+interface QualityState {
+  badStreak: number;
+  goodStreak: number;
+  qualityReduced: boolean;
+}
+
+function evaluateQualityReduced(stats: StreamStats[], state: QualityState): boolean {
+  if (stats.length === 0) return state.qualityReduced;
+
+  const isBad = stats.some((s) => {
+    const totalPackets = s.packetsReceived + s.packetsLost;
+    const lossRate = totalPackets > 0 ? s.packetsLost / totalPackets : 0;
+    return lossRate > 0.1 || s.jitterMs > 100 || (s.fps > 0 && s.fps < 15);
+  });
+
+  if (isBad) {
+    state.badStreak++;
+    state.goodStreak = 0;
+    if (state.badStreak >= 3) state.qualityReduced = true;
+  } else {
+    state.goodStreak++;
+    state.badStreak = 0;
+    if (state.goodStreak >= 5) state.qualityReduced = false;
+  }
+
+  return state.qualityReduced;
+}
 
 export function useWebRTCStats(
   getPeers: () => Map<string, RTCPeerConnection> | null,
   intervalMs = 2000
-): StreamStats[] {
+): { stats: StreamStats[]; qualityReduced: boolean } {
   const [stats, setStats] = useState<StreamStats[]>([]);
+  const [qualityReduced, setQualityReduced] = useState(false);
+  const qualityStateRef = useRef<QualityState>({
+    badStreak: 0,
+    goodStreak: 0,
+    qualityReduced: false,
+  });
 
   useEffect(() => {
     let prevBytes = new Map<string, number>();
@@ -30,6 +60,8 @@ export function useWebRTCStats(
       const peers = getPeers();
       if (!peers || peers.size === 0) {
         setStats([]);
+        const reduced = evaluateQualityReduced([], qualityStateRef.current);
+        setQualityReduced((prev) => (prev === reduced ? prev : reduced));
         return;
       }
       const results: StreamStats[] = [];
@@ -85,6 +117,9 @@ export function useWebRTCStats(
 
       prevTime = now;
       setStats(results);
+
+      const reduced = evaluateQualityReduced(results, qualityStateRef.current);
+      setQualityReduced((prev) => (prev === reduced ? prev : reduced));
     };
 
     poll();
@@ -92,28 +127,5 @@ export function useWebRTCStats(
     return () => clearInterval(id);
   }, [getPeers, intervalMs]);
 
-  return stats;
-}
-
-/** 根据统计信息建议降低质量（带持续时间判断与恢复机制） */
-export function shouldReduceQuality(stats: StreamStats[]): boolean {
-  if (stats.length === 0) return qualityReduced;
-
-  const isBad = stats.some((s) => {
-    const totalPackets = s.packetsReceived + s.packetsLost;
-    const lossRate = totalPackets > 0 ? s.packetsLost / totalPackets : 0;
-    return lossRate > 0.1 || s.jitterMs > 100 || (s.fps > 0 && s.fps < 15);
-  });
-
-  if (isBad) {
-    badStreak++;
-    goodStreak = 0;
-    if (badStreak >= 3) qualityReduced = true;
-  } else {
-    goodStreak++;
-    badStreak = 0;
-    if (goodStreak >= 5) qualityReduced = false;
-  }
-
-  return qualityReduced;
+  return { stats, qualityReduced };
 }

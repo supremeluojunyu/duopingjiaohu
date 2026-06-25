@@ -17,12 +17,16 @@ export class WebRTCManager {
   private iceServers: RTCIceServer[] = getCachedIceServers();
   private lowQualityMode = false;
   private makingOffer = new Set<string>();
+  private unregisterSignaling: (() => void) | null = null;
+  private onPeerFailed?: (remoteId: string, streamType: StreamType) => void;
 
   constructor(
     private signaling: SignalingClient,
     private localDeviceId: string
   ) {
-    this.signaling.onMessage((msg) => this.handleSignaling(msg));
+    this.unregisterSignaling = this.signaling.onMessage((msg) => {
+      void this.handleSignaling(msg);
+    });
   }
 
   setIceServers(servers: RTCIceServer[]): void {
@@ -47,6 +51,10 @@ export class WebRTCManager {
 
   setRemoteStreamCallback(cb: (streams: Map<string, RemoteStream>) => void): void {
     this.onRemoteStream = cb;
+  }
+
+  setPeerFailedCallback(cb: (remoteId: string, streamType: StreamType) => void): void {
+    this.onPeerFailed = cb;
   }
 
   setDeviceAlpha(deviceId: string, hasAlpha: boolean): void {
@@ -130,19 +138,33 @@ export class WebRTCManager {
     }
   }
 
-  /** 手机端开始投屏后会主动发 offer，电脑端只标记等待 */
+  /** 手机端开始投屏后会主动发 offer，电脑端预建接收并发送 subscribe 触发回连 */
   noteAwaitingPublisher(publisherId: string, streamType: StreamType = 'camera'): void {
     if (publisherId === this.localDeviceId) return;
     const key = `${publisherId}:${streamType}`;
-    if (!this.peers.has(key)) {
-      const pc = this.createPeerConnection(publisherId, streamType);
+    let pc = this.peers.get(key);
+    if (!pc || pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+      pc?.close();
+      this.peers.delete(key);
+      this.remoteStreams.delete(key);
+      pc = this.createPeerConnection(publisherId, streamType);
       this.peers.set(key, pc);
       this.ensureRecvTransceivers(pc);
+    } else {
+      this.ensureRecvTransceivers(pc);
     }
+    this.signaling.send({
+      type: 'subscribe',
+      to: publisherId,
+      payload: {
+        publisherId,
+        subscriberId: this.localDeviceId,
+        streamType,
+      },
+    });
   }
 
   private ensureRecvTransceivers(pc: RTCPeerConnection): void {
-    if (this.localStream) return;
     const transceivers = pc.getTransceivers();
     const hasVideoRecv = transceivers.some(
       (t) =>
@@ -289,6 +311,7 @@ export class WebRTCManager {
         this.peers.delete(key);
         this.remoteStreams.delete(key);
         this.notifyStreams();
+        this.onPeerFailed?.(remoteId, streamType);
       }
     };
 
@@ -320,7 +343,11 @@ export class WebRTCManager {
         if (!pc) {
           pc = this.createPeerConnection(msg.from, streamType);
           this.peers.set(key, pc);
-          this.attachLocalTracks(pc);
+          this.ensureRecvTransceivers(pc);
+          if (this.localStream) {
+            this.attachLocalTracks(pc);
+          }
+        } else {
           this.ensureRecvTransceivers(pc);
         }
 
@@ -379,14 +406,6 @@ export class WebRTCManager {
         break;
       }
 
-      case 'publish_started': {
-        const publisherId = msg.payload.deviceId as string;
-        if (publisherId === this.localDeviceId) break;
-        // 手机将主动发 offer，电脑预建接收用 PeerConnection
-        this.noteAwaitingPublisher(publisherId, streamType);
-        break;
-      }
-
       case 'ice': {
         if (!msg.from) return;
         const key = `${msg.from}:${streamType}`;
@@ -427,6 +446,8 @@ export class WebRTCManager {
   }
 
   destroy(): void {
+    this.unregisterSignaling?.();
+    this.unregisterSignaling = null;
     this.stopPublishing();
     this.peers.forEach((pc) => pc.close());
     this.peers.clear();

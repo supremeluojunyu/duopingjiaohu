@@ -115,7 +115,7 @@ async function getSegmenter(): Promise<SelfieSegmentation> {
     const seg = new SelfieSegmentation({
       locateFile: mediapipeAssetUrl,
     });
-    seg.setOptions({ modelSelection: 1 });
+    seg.setOptions({ modelSelection: 0 });
     seg.onResults(() => {});
     seg.initialize()
       .then(() => {
@@ -194,20 +194,30 @@ export function createSegmentedStream(
 
   let running = true;
   let processing = false;
+  let frameCount = 0;
+
+  const drawRawFrame = () => {
+    const ctx = canvas.getContext('2d');
+    if (!ctx || video.videoWidth === 0) return;
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    ctx.drawImage(video, 0, 0);
+  };
 
   const process = async () => {
     if (!running) return;
     if (!processing && video.readyState >= 2) {
       processing = true;
+      frameCount++;
+      const shouldSegment = frameCount % 2 === 1;
       try {
-        await applySegmentationWithBlur(video, canvas);
-      } catch {
-        const ctx = canvas.getContext('2d');
-        if (ctx && video.videoWidth > 0) {
-          canvas.width = video.videoWidth;
-          canvas.height = video.videoHeight;
-          ctx.drawImage(video, 0, 0);
+        if (shouldSegment) {
+          await applySegmentationWithBlur(video, canvas);
+        } else {
+          drawRawFrame();
         }
+      } catch {
+        drawRawFrame();
       }
       processing = false;
     }

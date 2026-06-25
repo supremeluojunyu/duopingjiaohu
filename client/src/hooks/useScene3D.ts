@@ -58,6 +58,21 @@ function disposeStreamDisplay(obj: StreamObject): void {
   obj.texture = undefined;
 }
 
+function getStreamDisplayObject(obj: StreamObject): THREE.Object3D | undefined {
+  return obj.mesh ?? obj.points;
+}
+
+function updateStreamTransform(displayObject: THREE.Object3D, mapping: StreamMapping): void {
+  displayObject.position.set(mapping.position.x, mapping.position.y, mapping.position.z);
+  displayObject.rotation.set(
+    THREE.MathUtils.degToRad(mapping.rotation.pitch),
+    THREE.MathUtils.degToRad(mapping.rotation.yaw),
+    THREE.MathUtils.degToRad(mapping.rotation.roll)
+  );
+  displayObject.scale.setScalar(mapping.scale);
+  displayObject.lookAt(0, mapping.position.y, 0);
+}
+
 function rebuildStreamDisplay(
   ref: SceneState,
   obj: StreamObject,
@@ -94,14 +109,7 @@ function rebuildStreamDisplay(
   }
 
   ref.scene.add(displayObject);
-  displayObject.position.set(mapping.position.x, mapping.position.y, mapping.position.z);
-  displayObject.rotation.set(
-    THREE.MathUtils.degToRad(mapping.rotation.pitch),
-    THREE.MathUtils.degToRad(mapping.rotation.yaw),
-    THREE.MathUtils.degToRad(mapping.rotation.roll)
-  );
-  displayObject.scale.setScalar(mapping.scale);
-  displayObject.lookAt(0, mapping.position.y, 0);
+  updateStreamTransform(displayObject, mapping);
 }
 
 export function useScene3D(
@@ -290,7 +298,12 @@ export function useScene3D(
         obj.video.play().catch(() => {});
       }
 
-      rebuildStreamDisplay(ref, obj, remote, mapping, effect);
+      const displayObject = getStreamDisplayObject(obj);
+      if (!displayObject || obj.effect !== effect) {
+        rebuildStreamDisplay(ref, obj, remote, mapping, effect);
+      } else {
+        updateStreamTransform(displayObject, mapping);
+      }
     }
 
     for (const [key, obj] of ref.streamObjects) {
@@ -315,7 +328,12 @@ export function useScene3D(
       const obj = ref.streamObjects.get(key);
       const remote = remoteStreamsRef.current.get(key);
       if (!obj || !remote) continue;
-      rebuildStreamDisplay(ref, obj, remote, mapping, effect);
+      const displayObject = getStreamDisplayObject(obj);
+      if (!displayObject || obj.effect !== effect) {
+        rebuildStreamDisplay(ref, obj, remote, mapping, effect);
+      } else {
+        updateStreamTransform(displayObject, mapping);
+      }
     }
   }, [viewMode]);
 

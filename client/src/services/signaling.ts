@@ -110,12 +110,18 @@ export class SignalingClient {
     this.ws.onclose = () => {
       this.stopPing();
       this.onConnectionChange?.(false);
-      if (this.shouldReconnect && this.reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
-        const delay = RECONNECT_INTERVAL_MS * 2 ** this.reconnectAttempts;
-        this.reconnectAttempts++;
-        setTimeout(() => this.openSocket(), delay);
-      } else if (this.shouldReconnect) {
-        this.onReconnectExhausted?.();
+      if (this.shouldReconnect) {
+        // 异常断开后重置，便于下次 connect() 获得新的 Promise
+        this.connectPromise = null;
+        this.connectResolve = null;
+        this.connectReject = null;
+        if (this.reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+          const delay = RECONNECT_INTERVAL_MS * 2 ** this.reconnectAttempts;
+          this.reconnectAttempts++;
+          setTimeout(() => this.openSocket(), delay);
+        } else {
+          this.onReconnectExhausted?.();
+        }
       }
     };
   }

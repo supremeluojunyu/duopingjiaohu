@@ -1,10 +1,10 @@
 {
-  "versionName": "0.1.8.4",
-  "versionCode": 10,
-  "fileName": "holographic-0.1.8.4.apk",
+  "versionName": "0.1.8.5",
+  "versionCode": 11,
+  "fileName": "holographic-0.1.8.5.apk",
   "fileSize": 98729254,
-  "sha256": "c63cf8b8c439db1bd10d937c6230d4f3e05b62bc88bd928631aff758d4e185f3",
-  "updatedAt": "2026-06-25T12:50:54.000Z",
+  "sha256": "3c92a88a4b8c18772a3ccab1754a2f83b9199cfafa78b4c29f9c1764bbe2ba04",
+  "updatedAt": "2026-06-25T12:56:35.000Z",
   "available": true,
   "releaseNotes": "Android 客户端更新"
 }

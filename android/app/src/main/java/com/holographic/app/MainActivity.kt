@@ -238,33 +238,42 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             binding.tvEmptyHint.visibility = View.VISIBLE
             sensorManager?.unregisterListener(this)
         } else {
-            ensureWebRtcManager()
-            val manager = webrtcManager
-            if (manager == null) {
-                Toast.makeText(this, "连接未就绪，请稍后再试", Toast.LENGTH_SHORT).show()
-                return
-            }
-            manager.setKnownPeerIds(knownDeviceIds)
-            binding.localPreview.visibility = View.VISIBLE
-            binding.tvEmptyHint.visibility = View.GONE
-            binding.remotePreview.visibility = View.VISIBLE
-            if (!manager.startPublishing(segmentationEnabled)) {
+            try {
+                ensureWebRtcManager()
+                val manager = webrtcManager
+                if (manager == null) {
+                    Toast.makeText(this, "连接未就绪，请稍后再试", Toast.LENGTH_SHORT).show()
+                    return
+                }
+                manager.setKnownPeerIds(knownDeviceIds)
+                manager.prefetchIceServers()
+                binding.localPreview.visibility = View.VISIBLE
+                binding.tvEmptyHint.visibility = View.GONE
+                binding.remotePreview.visibility = View.GONE
+                if (!manager.startPublishing(segmentationEnabled)) {
+                    binding.localPreview.visibility = View.GONE
+                    binding.tvEmptyHint.visibility = View.VISIBLE
+                    Toast.makeText(this, "无法打开摄像头，请检查权限", Toast.LENGTH_LONG).show()
+                    return
+                }
+                isPublishing = true
+                binding.btnStartCast.text = "停止投屏"
+                signalingClient?.send(
+                    "publish_started",
+                    mapOf("hasAlpha" to segmentationEnabled)
+                )
+                signalingClient?.send(
+                    "device_update",
+                    mapOf("hasAlpha" to segmentationEnabled)
+                )
+                rotationSensor?.let { sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
+            } catch (e: Exception) {
+                isPublishing = false
                 binding.localPreview.visibility = View.GONE
                 binding.tvEmptyHint.visibility = View.VISIBLE
-                Toast.makeText(this, "无法打开摄像头，请检查权限", Toast.LENGTH_LONG).show()
-                return
+                binding.btnStartCast.text = "开始投屏"
+                Toast.makeText(this, "投屏失败: ${e.message}", Toast.LENGTH_LONG).show()
             }
-            isPublishing = true
-            binding.btnStartCast.text = "停止投屏"
-            signalingClient?.send(
-                "publish_started",
-                mapOf("hasAlpha" to segmentationEnabled)
-            )
-            signalingClient?.send(
-                "device_update",
-                mapOf("hasAlpha" to segmentationEnabled)
-            )
-            rotationSensor?.let { sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
         }
     }
 

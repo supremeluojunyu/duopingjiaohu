@@ -20,7 +20,14 @@ class WebRTCManager(
     companion object {
         private const val TAG = "WebRTCManager"
         private const val STREAM_TYPE = "camera"
+        private val FALLBACK_ICE = listOf(
+            IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
+            IceServer.builder("stun:stun1.l.google.com:19302").createIceServer(),
+            IceServer.builder("stun:stun.qq.com:3478").createIceServer()
+        )
     }
+
+    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
     private var factory: PeerConnectionFactory? = null
     private var localVideoTrack: VideoTrack? = null
@@ -43,9 +50,25 @@ class WebRTCManager(
         if (servers.isNotEmpty()) iceServers = servers
     }
 
+    /** 仅使用已缓存 ICE，禁止在主线程发起网络请求（会触发 NetworkOnMainThreadException 闪退） */
     private fun activeIceServers(): List<IceServer> {
-        if (iceServers.isNotEmpty()) return iceServers
-        return IceConfigFetcher.fetch(SignalingConfig.getServerUrl()).also { iceServers = it }
+        return if (iceServers.isNotEmpty()) iceServers else FALLBACK_ICE
+    }
+
+    fun prefetchIceServers(onReady: (() -> Unit)? = null) {
+        if (iceServers.isNotEmpty()) {
+            onReady?.let { mainHandler.post(it) }
+            return
+        }
+        Thread {
+            try {
+                val servers = IceConfigFetcher.fetch(SignalingConfig.getServerUrl())
+                if (servers.isNotEmpty()) iceServers = servers
+            } catch (e: Exception) {
+                Log.w(TAG, "预拉取 ICE 失败: ${e.message}")
+            }
+            onReady?.let { mainHandler.post(it) }
+        }.start()
     }
 
     /** 加入房间后初始化，用于接收远端 offer */
@@ -60,6 +83,7 @@ class WebRTCManager(
             }
             receiveReady = true
             Log.i(TAG, "接收通道已就绪")
+            prefetchIceServers()
         } catch (e: Exception) {
             Log.e(TAG, "接收通道初始化失败", e)
         }
@@ -110,13 +134,23 @@ class WebRTCManager(
                 context,
                 source.capturerObserver
             )
-            capturer.startCapture(1280, 720, 30)
+            val captureWidth = if (enableSegmentation) 640 else 1280
+            val captureHeight = if (enableSegmentation) 480 else 720
+            val captureFps = if (enableSegmentation) 24 else 30
+            capturer.startCapture(captureWidth, captureHeight, captureFps)
 
             if (enableSegmentation) {
                 try {
-                    segmentationProcessor = SegmentationProcessor(context).also { it.setEnabled(true) }
-                    source.setVideoProcessor(segmentationProcessor)
-                    Log.i(TAG, "MediaPipe 人像抠图已启用")
+                    val processor = SegmentationProcessor(context)
+                    if (processor.isReady()) {
+                        processor.setEnabled(true)
+                        segmentationProcessor = processor
+                        source.setVideoProcessor(processor)
+                        Log.i(TAG, "MediaPipe 人像抠图已启用")
+                    } else {
+                        processor.release()
+                        Log.w(TAG, "MediaPipe 未就绪，回退普通推流")
+                    }
                 } catch (e: Exception) {
                     Log.e(TAG, "MediaPipe 初始化失败，回退普通推流", e)
                     segmentationProcessor = null
@@ -133,9 +167,9 @@ class WebRTCManager(
             localAudioTrack = peerFactory.createAudioTrack("audio0", aSource)
 
             isPublishing = true
-            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                renegotiateAllPeers()
-            }, 300)
+            prefetchIceServers {
+                mainHandler.postDelayed({ renegotiateAllPeersSafe() }, 300)
+            }
             Log.i(TAG, "推流已开始")
             true
         } catch (e: Exception) {
@@ -219,6 +253,7 @@ class WebRTCManager(
         videoCapturer?.dispose()
         videoCapturer = null
 
+        videoSource?.setVideoProcessor(null)
         segmentationProcessor?.release()
         segmentationProcessor = null
 
@@ -297,48 +332,61 @@ class WebRTCManager(
 
     private fun offerStreamToPeer(remoteId: String) {
         if (!isPublishing || remoteId == localDeviceId) return
-        ensureReceiveReady()
-        val key = peerKey(remoteId)
-        val pc = getOrCreatePeerConnection(remoteId)
-        attachLocalTracks(pc)
-        makingOffer.add(key)
+        try {
+            ensureReceiveReady()
+            val key = peerKey(remoteId)
+            val pc = getOrCreatePeerConnection(remoteId)
+            attachLocalTracks(pc)
+            makingOffer.add(key)
 
-        pc.createOffer(object : SdpObserver {
-            override fun onCreateSuccess(offer: SessionDescription?) {
-                offer ?: return
-                pc.setLocalDescription(object : SdpObserver {
-                    override fun onCreateSuccess(desc: SessionDescription?) {}
-                    override fun onSetSuccess() {
-                        makingOffer.remove(key)
-                        sendSdp("offer", offer, remoteId)
-                    }
-                    override fun onCreateFailure(error: String?) {
-                        makingOffer.remove(key)
-                        Log.e(TAG, "setLocalDescription(re-offer) 失败: $error")
-                    }
-                    override fun onSetFailure(error: String?) {
-                        makingOffer.remove(key)
-                        Log.e(TAG, "setLocalDescription(re-offer) 失败: $error")
-                    }
-                }, offer)
-            }
-            override fun onSetSuccess() {}
-            override fun onCreateFailure(error: String?) {
-                makingOffer.remove(key)
-                Log.e(TAG, "createOffer(renegotiate) 失败: $error")
-            }
-            override fun onSetFailure(error: String?) {
-                makingOffer.remove(key)
-            }
-        }, MediaConstraints())
+            pc.createOffer(object : SdpObserver {
+                override fun onCreateSuccess(offer: SessionDescription?) {
+                    offer ?: return
+                    pc.setLocalDescription(object : SdpObserver {
+                        override fun onCreateSuccess(desc: SessionDescription?) {}
+                        override fun onSetSuccess() {
+                            makingOffer.remove(key)
+                            sendSdp("offer", offer, remoteId)
+                        }
+                        override fun onCreateFailure(error: String?) {
+                            makingOffer.remove(key)
+                            Log.e(TAG, "setLocalDescription(re-offer) 失败: $error")
+                        }
+                        override fun onSetFailure(error: String?) {
+                            makingOffer.remove(key)
+                            Log.e(TAG, "setLocalDescription(re-offer) 失败: $error")
+                        }
+                    }, offer)
+                }
+                override fun onSetSuccess() {}
+                override fun onCreateFailure(error: String?) {
+                    makingOffer.remove(key)
+                    Log.e(TAG, "createOffer(renegotiate) 失败: $error")
+                }
+                override fun onSetFailure(error: String?) {
+                    makingOffer.remove(key)
+                }
+            }, MediaConstraints())
+        } catch (e: Exception) {
+            Log.e(TAG, "offerStreamToPeer 失败: $remoteId", e)
+        }
     }
 
     fun renegotiateAllPeers() {
-        val targets = (peerConnections.keys.map { it.substringBefore(':') } + knownPeerIds)
-            .filter { it != localDeviceId }
-            .distinct()
-        Log.i(TAG, "向 ${targets.size} 个设备重协商推流: $targets")
-        targets.forEach { offerStreamToPeer(it) }
+        renegotiateAllPeersSafe()
+    }
+
+    private fun renegotiateAllPeersSafe() {
+        if (!isPublishing) return
+        try {
+            val targets = (peerConnections.keys.map { it.substringBefore(':') } + knownPeerIds)
+                .filter { it != localDeviceId }
+                .distinct()
+            Log.i(TAG, "向 ${targets.size} 个设备重协商推流: $targets")
+            targets.forEach { offerStreamToPeer(it) }
+        } catch (e: Exception) {
+            Log.e(TAG, "重协商推流失败", e)
+        }
     }
 
     private fun getOrCreatePeerConnection(remoteId: String): PeerConnection {

@@ -42,6 +42,8 @@ class SegmentationProcessor(private val context: Context) : VideoProcessor {
     private var enabled = false
     private var lastProcessTimeMs = 0L
 
+    fun isReady(): Boolean = segmenter != null
+
     init {
         initSegmenter()
     }
@@ -52,7 +54,7 @@ class SegmentationProcessor(private val context: Context) : VideoProcessor {
                 .setBaseOptions(
                     BaseOptions.builder()
                         .setModelAssetPath(MODEL)
-                        .setDelegate(Delegate.GPU)
+                        .setDelegate(Delegate.CPU)
                         .build()
                 )
                 .setRunningMode(RunningMode.VIDEO)
@@ -60,26 +62,10 @@ class SegmentationProcessor(private val context: Context) : VideoProcessor {
                 .setOutputConfidenceMasks(false)
                 .build()
             segmenter = ImageSegmenter.createFromOptions(context, options)
-            Log.i(TAG, "MediaPipe ImageSegmenter 就绪 (VIDEO + GPU)")
+            Log.i(TAG, "MediaPipe ImageSegmenter 就绪 (VIDEO + CPU)")
         } catch (e: Exception) {
-            Log.w(TAG, "GPU/VIDEO 初始化失败，回退 CPU: ${e.message}")
-            try {
-                val fallback = ImageSegmenter.ImageSegmenterOptions.builder()
-                    .setBaseOptions(
-                        BaseOptions.builder()
-                            .setModelAssetPath(MODEL)
-                            .setDelegate(Delegate.CPU)
-                            .build()
-                    )
-                    .setRunningMode(RunningMode.VIDEO)
-                    .setOutputCategoryMask(true)
-                    .setOutputConfidenceMasks(false)
-                    .build()
-                segmenter = ImageSegmenter.createFromOptions(context, fallback)
-                Log.i(TAG, "MediaPipe ImageSegmenter 就绪 (VIDEO + CPU)")
-            } catch (e2: Exception) {
-                Log.e(TAG, "MediaPipe 初始化失败: ${e2.message}")
-            }
+            Log.e(TAG, "MediaPipe 初始化失败: ${e.message}")
+            segmenter = null
         }
     }
 
@@ -96,7 +82,10 @@ class SegmentationProcessor(private val context: Context) : VideoProcessor {
 
     override fun onFrameCaptured(frame: VideoFrame) {
         val targetSink = sink
-        if (targetSink == null) return
+        if (targetSink == null) {
+            frame.release()
+            return
+        }
 
         if (!enabled || segmenter == null) {
             targetSink.onFrame(frame)
@@ -112,6 +101,7 @@ class SegmentationProcessor(private val context: Context) : VideoProcessor {
 
         try {
             val processed = processFrame(frame)
+            frame.release()
             targetSink.onFrame(processed)
             processed.release()
         } catch (e: Exception) {
@@ -121,7 +111,7 @@ class SegmentationProcessor(private val context: Context) : VideoProcessor {
     }
 
     private fun processFrame(frame: VideoFrame): VideoFrame {
-        val i420 = frame.buffer.toI420() ?: return frame
+        val i420 = frame.buffer.toI420() ?: throw IllegalStateException("无法转换 I420")
         val w = i420.width
         val h = i420.height
 

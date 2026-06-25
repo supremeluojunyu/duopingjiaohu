@@ -26,6 +26,14 @@ jobs:
         env:
           VITE_SIGNALING_URL: ${{ env.VITE_SIGNALING_URL }}
 
+      - name: Set desktop semver from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          SEMVER=$(echo "$TAG" | sed -E 's/^([0-9]+)\.([0-9]+)\.([0-9]+)\.([0-9]+)$/\1.\2.\3-\4/')
+          node -e "const fs=require('fs'); const p=require('./desktop/package.json'); p.version='$SEMVER'; fs.writeFileSync('desktop/package.json', JSON.stringify(p,null,2)+'\n'); console.log('desktop version:', p.version);"
+
       - name: Install desktop deps
         run: npm install --prefix desktop
 
@@ -67,6 +75,14 @@ jobs:
         run: npm run build --prefix client
         env:
           VITE_SIGNALING_URL: ${{ env.VITE_SIGNALING_URL }}
+
+      - name: Set desktop semver from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          SEMVER=$(echo "$TAG" | sed -E 's/^([0-9]+)\.([0-9]+)\.([0-9]+)\.([0-9]+)$/\1.\2.\3-\4/')
+          node -e "const fs=require('fs'); const p=require('./desktop/package.json'); p.version='$SEMVER'; fs.writeFileSync('desktop/package.json', JSON.stringify(p,null,2)+'\n'); console.log('desktop version:', p.version);"
 
       - name: Install desktop deps
         run: npm install --prefix desktop

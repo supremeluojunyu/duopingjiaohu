@@ -66,7 +66,9 @@ async function checkNetwork(serverUrl: string): Promise<NetworkCheckResult> {
     }
     return {
       ok: false,
-      message: `无法连接信令服务器 (${base})，请确认服务是否运行、frp 是否已穿透`,
+      message: /localhost:9876/i.test(base)
+        ? `无法连接信令服务器 (${base})。EXE 在其它电脑上运行时请改用公网地址 http://124.220.4.69:9000`
+        : `无法连接信令服务器 (${base})，请确认服务是否运行、frp 是否已穿透`,
     };
   } finally {
     window.clearTimeout(timer);
@@ -141,6 +143,16 @@ function App() {
   const [joinError, setJoinError] = useState<string | null>(null);
   const [joining, setJoining] = useState(false);
   const [showDownloadPage, setShowDownloadPage] = useState(isDownloadPage);
+
+  // Electron 打包版：从主进程读取默认信令地址（覆盖构建时 localhost）
+  useEffect(() => {
+    const api = (window as Window & { electronAPI?: { getSignalingUrl?: () => Promise<string> } })
+      .electronAPI;
+    if (!api?.getSignalingUrl) return;
+    void api.getSignalingUrl().then((url) => {
+      if (url) setJoinForm((f) => ({ ...f, serverUrl: url }));
+    });
+  }, []);
 
   const goToDownloadPage = () => {
     const params = new URLSearchParams(window.location.search);
@@ -582,6 +594,7 @@ function App() {
           <label>信令服务器</label>
           <input
             value={joinForm.serverUrl}
+            placeholder="http://124.220.4.69:9000（公网）"
             onChange={(e) => {
               setJoinForm({ ...joinForm, serverUrl: e.target.value });
               setJoinError(null);

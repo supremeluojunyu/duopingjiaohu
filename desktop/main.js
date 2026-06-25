@@ -3,7 +3,9 @@ const path = require('path');
 const fs = require('fs');
 
 const isDev = !app.isPackaged;
-const SIGNALING_URL = process.env.HOLO_SIGNALING_URL ?? '';
+/** 打包版默认公网信令（frp 9000→本机9876）；开发时可设 HOLO_SIGNALING_URL 覆盖 */
+const DEFAULT_SIGNALING_URL = 'http://124.220.4.69:9000';
+const SIGNALING_URL = process.env.HOLO_SIGNALING_URL ?? (isDev ? '' : DEFAULT_SIGNALING_URL);
 
 function getClientIndexPath() {
   if (isDev) {

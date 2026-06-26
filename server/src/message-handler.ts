@@ -30,6 +30,17 @@ export function handleMessage(ws: WebSocket, raw: WebSocket.RawData): void {
   switch (msg.type) {
     case 'join': {
       try {
+        const existing = roomManager.getClientByWs(ws);
+        if (existing) {
+          roomManager.unregisterClient(ws);
+          roomManager.broadcast(existing.roomId, {
+            type: 'peer_left',
+            payload: { deviceId: existing.deviceId },
+            timestamp: Date.now(),
+            from: existing.deviceId,
+          });
+        }
+
         const { roomId, password, device } = msg.payload as {
           roomId?: string;
           password?: string;
@@ -61,6 +72,18 @@ export function handleMessage(ws: WebSocket, raw: WebSocket.RawData): void {
           timestamp: Date.now(),
         });
 
+        roomManager.sendRoomStateSync(ws, room.id, deviceInfo.id);
+
+        roomManager.broadcast(
+          room.id,
+          {
+            type: 'mapping_sync',
+            payload: { mappings: room.mappings },
+            timestamp: Date.now(),
+          },
+          deviceInfo.id
+        );
+
         roomManager.broadcast(
           room.id,
           {
@@ -89,30 +112,47 @@ export function handleMessage(ws: WebSocket, raw: WebSocket.RawData): void {
         error(ws, '缺少目标设备 ID');
         return;
       }
-      roomManager.sendToDevice(to, {
+      const sent = roomManager.sendToDeviceInRoom(client.roomId, to, {
         ...msg,
         from: client.deviceId,
         timestamp: Date.now(),
       });
+      if (!sent) {
+        console.warn(
+          `[signaling] ${msg.type} 投递失败: ${client.deviceId} -> ${to}`
+        );
+        error(ws, `目标设备不可达 (${to})，对方可能已离线`);
+      }
       break;
     }
 
     case 'subscribe':
     case 'unsubscribe': {
-      if (!client) return;
-      roomManager.broadcast(
-        client.roomId,
-        {
-          type: msg.type,
-          payload: {
-            ...msg.payload,
-            subscriberId: client.deviceId,
-          },
-          timestamp: Date.now(),
-          from: client.deviceId,
+      if (!client) {
+        error(ws, '请先加入房间');
+        return;
+      }
+      const message: SignalingMessage = {
+        type: msg.type,
+        payload: {
+          ...msg.payload,
+          subscriberId: client.deviceId,
         },
-        client.deviceId
-      );
+        timestamp: Date.now(),
+        from: client.deviceId,
+      };
+      const to = msg.to ?? (msg.payload.publisherId as string | undefined);
+      if (to) {
+        const sent = roomManager.sendToDeviceInRoom(client.roomId, to, message);
+        if (!sent) {
+          console.warn(
+            `[signaling] ${msg.type} 投递失败: ${client.deviceId} -> ${to}`
+          );
+          error(ws, `目标设备不可达 (${to})，对方可能已离线`);
+        }
+      } else {
+        roomManager.broadcast(client.roomId, message, client.deviceId);
+      }
       break;
     }
 
@@ -137,7 +177,10 @@ export function handleMessage(ws: WebSocket, raw: WebSocket.RawData): void {
     }
 
     case 'scene_save': {
-      if (!client) return;
+      if (!client || !roomManager.isAdmin(client.roomId, client.deviceId)) {
+        error(ws, '需要管理员权限');
+        return;
+      }
       try {
         const preset = roomManager.savePreset(client.roomId, msg.payload as Parameters<typeof roomManager.savePreset>[1]);
         roomManager.sendToClient(ws, {
@@ -218,6 +261,11 @@ export function handleMessage(ws: WebSocket, raw: WebSocket.RawData): void {
 
     case 'publish_started': {
       if (!client) return;
+      roomManager.setPublishing(
+        client.roomId,
+        client.deviceId,
+        Boolean(msg.payload.hasAlpha)
+      );
       roomManager.broadcast(
         client.roomId,
         {
@@ -231,6 +279,31 @@ export function handleMessage(ws: WebSocket, raw: WebSocket.RawData): void {
         },
         client.deviceId
       );
+      break;
+    }
+
+    case 'publish_stopped': {
+      if (!client) return;
+      roomManager.clearPublishing(client.roomId, client.deviceId);
+      roomManager.broadcast(
+        client.roomId,
+        {
+          type: 'publish_stopped',
+          payload: { deviceId: client.deviceId },
+          timestamp: Date.now(),
+          from: client.deviceId,
+        },
+        client.deviceId
+      );
+      break;
+    }
+
+    case 'sync_room_state': {
+      if (!client) {
+        error(ws, '请先加入房间');
+        return;
+      }
+      roomManager.sendRoomStateSync(ws, client.roomId, client.deviceId);
       break;
     }
 
@@ -268,13 +341,25 @@ export function handleMessage(ws: WebSocket, raw: WebSocket.RawData): void {
 }
 
 export function handleClose(ws: WebSocket): void {
-  const client = roomManager.unregisterClient(ws);
-  if (client) {
+  const client = roomManager.getClientByWs(ws);
+  if (!client) return;
+
+  const wasPublishing = roomManager.isPublishing(client.roomId, client.deviceId);
+  roomManager.unregisterClient(ws);
+
+  if (wasPublishing) {
     roomManager.broadcast(client.roomId, {
-      type: 'peer_left',
+      type: 'publish_stopped',
       payload: { deviceId: client.deviceId },
       timestamp: Date.now(),
       from: client.deviceId,
     });
   }
+
+  roomManager.broadcast(client.roomId, {
+    type: 'peer_left',
+    payload: { deviceId: client.deviceId },
+    timestamp: Date.now(),
+    from: client.deviceId,
+  });
 }

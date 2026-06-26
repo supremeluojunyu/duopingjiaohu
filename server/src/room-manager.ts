@@ -38,6 +38,7 @@ export class RoomManager {
       devices: [],
       mappings: [],
       presets: [],
+      publishers: {},
       createdAt: Date.now(),
     };
     this.rooms.set(id, room);
@@ -68,6 +69,7 @@ export class RoomManager {
       devices: [],
       mappings: [],
       presets: [],
+      publishers: {},
       createdAt: Date.now(),
     };
     this.rooms.set(normalized, room);
@@ -90,6 +92,9 @@ export class RoomManager {
     if (room) {
       room.devices = room.devices.filter((d) => d.id !== client.deviceId);
       room.mappings = room.mappings.filter((m) => m.deviceId !== client.deviceId);
+      if (room.publishers) {
+        delete room.publishers[client.deviceId];
+      }
       if (room.devices.length === 0) {
         this.rooms.delete(room.id);
       }
@@ -127,7 +132,7 @@ export class RoomManager {
       id: uuidv4(),
       name: device.name,
       type: device.type,
-      role: device.role ?? 'user',
+      role: room.devices.length === 0 ? 'admin' : 'user',
       streamTypes: device.streamTypes ?? ['camera'],
       hasAlpha: device.hasAlpha ?? false,
       online: true,
@@ -193,6 +198,45 @@ export class RoomManager {
     if (device) device.sensor = sensor;
   }
 
+  setPublishing(roomId: string, deviceId: string, hasAlpha: boolean): void {
+    const room = this.getRoom(roomId);
+    if (!room) return;
+    if (!room.publishers) room.publishers = {};
+    room.publishers[deviceId] = { hasAlpha };
+  }
+
+  clearPublishing(roomId: string, deviceId: string): void {
+    const room = this.getRoom(roomId);
+    if (!room?.publishers) return;
+    delete room.publishers[deviceId];
+  }
+
+  isPublishing(roomId: string, deviceId: string): boolean {
+    const room = this.getRoom(roomId);
+    return Boolean(room?.publishers?.[deviceId]);
+  }
+
+  getPublisherList(roomId: string): { deviceId: string; hasAlpha: boolean }[] {
+    const room = this.getRoom(roomId);
+    if (!room?.publishers) return [];
+    return Object.entries(room.publishers).map(([deviceId, state]) => ({
+      deviceId,
+      hasAlpha: state.hasAlpha,
+    }));
+  }
+
+  sendRoomStateSync(ws: WebSocket, roomId: string, excludeDeviceId?: string): void {
+    const publishers = this.getPublisherList(roomId).filter(
+      (p) => p.deviceId !== excludeDeviceId
+    );
+    if (publishers.length === 0) return;
+    this.sendToClient(ws, {
+      type: 'room_state_sync',
+      payload: { publishers },
+      timestamp: Date.now(),
+    });
+  }
+
   updateDeviceFlags(
     roomId: string,
     deviceId: string,
@@ -218,6 +262,19 @@ export class RoomManager {
   sendToDevice(deviceId: string, message: SignalingMessage): boolean {
     const ws = this.deviceSockets.get(deviceId);
     if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    ws.send(JSON.stringify(message));
+    return true;
+  }
+
+  sendToDeviceInRoom(
+    roomId: string,
+    deviceId: string,
+    message: SignalingMessage
+  ): boolean {
+    const ws = this.deviceSockets.get(deviceId);
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    const client = this.clients.get(ws);
+    if (!client || client.roomId !== roomId) return false;
     ws.send(JSON.stringify(message));
     return true;
   }

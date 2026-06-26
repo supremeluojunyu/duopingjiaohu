@@ -61,7 +61,10 @@ export type MessageType =
   | 'error'
   | 'role_change'
   | 'device_update'
-  | 'publish_started';
+  | 'publish_started'
+  | 'publish_stopped'
+  | 'sync_room_state'
+  | 'room_state_sync';
 
 export interface SignalingMessage {
   type: MessageType;

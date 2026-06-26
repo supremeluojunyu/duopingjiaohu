@@ -2,6 +2,7 @@ package com.holographic.app
 
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
@@ -11,6 +12,10 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 class SignalingClient(private val url: String) {
+    companion object {
+        private const val TAG = "SignalingClient"
+    }
+
     private val gson = Gson()
     private var webSocket: WebSocket? = null
     private val client = OkHttpClient.Builder()
@@ -29,6 +34,9 @@ class SignalingClient(private val url: String) {
     private val reconnectHandler = Handler(Looper.getMainLooper())
     private var reconnectRunnable: Runnable? = null
     private var lastJoinPayload: Map<String, Any?>? = null
+    @Volatile
+    private var pingThread: Thread? = null
+    private val reconnectPending = java.util.concurrent.atomic.AtomicBoolean(false)
 
     data class SignalingMessage(
         val type: String,
@@ -48,9 +56,10 @@ class SignalingClient(private val url: String) {
     fun disconnect() {
         shouldReconnect = false
         cancelReconnect()
+        connected.set(false)
+        stopPing()
         webSocket?.close(1000, null)
         webSocket = null
-        connected.set(false)
     }
 
     fun isConnected(): Boolean = connected.get()
@@ -71,34 +80,67 @@ class SignalingClient(private val url: String) {
         lastJoinPayload = payload
     }
 
-    fun send(type: String, payload: Map<String, Any?>, to: String? = null) {
+    /** @return 是否成功写入 WebSocket 发送队列 */
+    fun send(type: String, payload: Map<String, Any?>, to: String? = null): Boolean {
+        if (!connected.get()) {
+            Log.w(TAG, "send 失败: 未连接 type=$type")
+            return false
+        }
+        val ws = webSocket
+        if (ws == null) {
+            Log.w(TAG, "send 失败: WebSocket 为空 type=$type")
+            return false
+        }
+
         val msg = mutableMapOf<String, Any?>(
             "type" to type,
             "payload" to payload,
             "timestamp" to System.currentTimeMillis()
         )
         if (to != null) msg["to"] = to
-        webSocket?.send(gson.toJson(msg))
+
+        val ok = ws.send(gson.toJson(msg))
+        if (!ok) {
+            Log.w(TAG, "send 失败: 连接已关闭或发送队列不可用 type=$type")
+        }
+        return ok
     }
 
     fun startPing(intervalMs: Long = 10000) {
-        Thread {
-            while (connected.get()) {
-                send("ping", emptyMap())
-                Thread.sleep(intervalMs)
+        stopPing()
+        val thread = Thread {
+            try {
+                while (connected.get() && !Thread.currentThread().isInterrupted) {
+                    send("ping", emptyMap())
+                    Thread.sleep(intervalMs)
+                }
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
             }
-        }.apply { isDaemon = true; start() }
+        }.apply { isDaemon = true; name = "SignalingPing" }
+        pingThread = thread
+        thread.start()
+    }
+
+    private fun stopPing() {
+        pingThread?.interrupt()
+        pingThread = null
     }
 
     private fun connectInternal(blocking: Boolean): Boolean {
         val latch = if (blocking) CountDownLatch(1) else null
         var success = false
 
+        webSocket?.close(1000, "reconnecting")
+        webSocket = null
+        connected.set(false)
+
         val request = Request.Builder().url(url).build()
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 connected.set(true)
                 reconnectAttempts = 0
+                reconnectPending.set(false)
                 success = true
                 latch?.countDown()
 
@@ -125,14 +167,13 @@ class SignalingClient(private val url: String) {
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 connected.set(false)
                 latch?.countDown()
-                scheduleReconnect()
+                if (shouldReconnect) {
+                    scheduleReconnect()
+                }
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 connected.set(false)
-                if (code != 1000) {
-                    scheduleReconnect()
-                }
             }
         })
 
@@ -145,9 +186,11 @@ class SignalingClient(private val url: String) {
 
     private fun scheduleReconnect() {
         if (!shouldReconnect) return
+        if (!reconnectPending.compareAndSet(false, true)) return
 
         if (reconnectAttempts >= maxReconnectAttempts) {
             shouldReconnect = false
+            reconnectPending.set(false)
             cancelReconnect()
             onReconnectExhausted?.invoke()
             return
@@ -158,6 +201,7 @@ class SignalingClient(private val url: String) {
 
         cancelReconnect()
         reconnectRunnable = Runnable {
+            reconnectPending.set(false)
             if (shouldReconnect) {
                 connectInternal(blocking = false)
             }

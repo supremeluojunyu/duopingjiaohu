@@ -17,6 +17,7 @@ import com.holographic.app.databinding.ActivityMainBinding
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import org.webrtc.EglBase
+import java.util.concurrent.CopyOnWriteArraySet
 
 class MainActivity : AppCompatActivity(), SensorEventListener {
 
@@ -27,10 +28,11 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     private var localDeviceId: String? = null
     private var isPublishing = false
     private var segmentationEnabled = false
-    private var knownDeviceIds = mutableSetOf<String>()
+    private val knownDeviceIds = CopyOnWriteArraySet<String>()
     private var sensorManager: SensorManager? = null
     private var rotationSensor: Sensor? = null
     private var lastSensorReport = 0L
+    private var isJoining = false
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -142,7 +144,25 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         }.start()
     }
 
+    private fun setJoinUiEnabled(enabled: Boolean) {
+        binding.btnJoinManual.isEnabled = enabled
+        binding.btnScanJoin.isEnabled = enabled
+        binding.etRoomId.isEnabled = enabled
+        binding.etServerUrl.isEnabled = enabled
+    }
+
+    private fun finishJoinAttempt() {
+        isJoining = false
+        setJoinUiEnabled(true)
+    }
+
     private fun joinRoom(roomId: String) {
+        if (isJoining) return
+        if (signalingClient != null) {
+            Toast.makeText(this, "已在连接或已加入房间", Toast.LENGTH_SHORT).show()
+            return
+        }
+
         val normalizedRoomId = roomId.trim().uppercase()
         if (normalizedRoomId.isEmpty()) {
             Toast.makeText(this, "请输入房间号", Toast.LENGTH_SHORT).show()
@@ -160,12 +180,18 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         }
         SignalingConfig.setServerUrl(serverUrl)
 
+        isJoining = true
+        setJoinUiEnabled(false)
+
         Thread {
+            var client: SignalingClient? = null
             try {
-                val client = SignalingClient(SignalingConfig.getServerUrl())
+                client = SignalingClient(SignalingConfig.getServerUrl())
                 if (!client.connect()) {
+                    client.disconnect()
                     runOnUiThread {
                         Toast.makeText(this, "无法连接信令服务器", Toast.LENGTH_LONG).show()
+                        finishJoinAttempt()
                     }
                     return@Thread
                 }
@@ -198,21 +224,21 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                     )
                 )
                 client.setJoinPayload(joinPayload)
-                client.send("join", joinPayload)
+                if (!client.send("join", joinPayload)) {
+                    runOnUiThread {
+                        Toast.makeText(this, "加入房间消息发送失败", Toast.LENGTH_LONG).show()
+                        client.disconnect()
+                        finishJoinAttempt()
+                    }
+                    return@Thread
+                }
 
                 signalingClient = client
-
-                runOnUiThread {
-                    binding.tvRoomId.text = "房间: $normalizedRoomId"
-                    binding.statusBar.visibility = View.VISIBLE
-                    binding.joinPanel.visibility = View.GONE
-                    binding.controlBar.visibility = View.VISIBLE
-                    binding.tvEmptyHint.visibility = View.VISIBLE
-                    binding.localPreview.visibility = View.GONE
-                }
             } catch (e: Exception) {
+                client?.disconnect()
                 runOnUiThread {
                     Toast.makeText(this, "连接失败: ${e.message}", Toast.LENGTH_LONG).show()
+                    finishJoinAttempt()
                 }
             }
         }.start()
@@ -232,7 +258,17 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             eglBase = eglBase!!
         )
         webrtcManager!!.ensureReceiveReady()
-        webrtcManager!!.setKnownPeerIds(knownDeviceIds)
+        webrtcManager!!.setKnownPeerIds(knownDeviceIds.toSet())
+    }
+
+    private fun notifyPublishStarted(): Boolean {
+        val payload = mapOf("hasAlpha" to segmentationEnabled)
+        val started = signalingClient?.send("publish_started", payload) == true
+        if (started) {
+            // device_update 失败不影响 EXE 收到 publish_started
+            signalingClient?.send("device_update", payload)
+        }
+        return started
     }
 
     private fun togglePublishing() {
@@ -244,58 +280,96 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         if (isPublishing) {
             webrtcManager?.stopPublishing()
             isPublishing = false
+            signalingClient?.send("publish_stopped", emptyMap())
             binding.btnStartCast.text = "开始投屏"
             binding.localPreview.visibility = View.GONE
             binding.tvEmptyHint.visibility = View.VISIBLE
             sensorManager?.unregisterListener(this)
         } else {
-            try {
-                ensureWebRtcManager()
-                val manager = webrtcManager
-                if (manager == null) {
-                    Toast.makeText(this, "连接未就绪，请稍后再试", Toast.LENGTH_SHORT).show()
-                    return
+            binding.btnStartCast.isEnabled = false
+            Thread {
+                try {
+                    val iceServers = IceConfigFetcher.fetch(SignalingConfig.getServerUrl())
+                    runOnUiThread {
+                        binding.btnStartCast.isEnabled = true
+                        try {
+                            ensureWebRtcManager()
+                            val manager = webrtcManager
+                            if (manager == null) {
+                                Toast.makeText(this, "连接未就绪，请稍后再试", Toast.LENGTH_SHORT).show()
+                                return@runOnUiThread
+                            }
+                            manager.setIceServers(iceServers)
+                            manager.setKnownPeerIds(knownDeviceIds.toSet())
+                            binding.localPreview.visibility = View.VISIBLE
+                            binding.tvEmptyHint.visibility = View.GONE
+                            binding.remotePreview.visibility = View.GONE
+                            if (!manager.startPublishing(segmentationEnabled)) {
+                                binding.localPreview.visibility = View.GONE
+                                binding.tvEmptyHint.visibility = View.VISIBLE
+                                Toast.makeText(this, "无法打开摄像头，请检查权限", Toast.LENGTH_LONG).show()
+                                return@runOnUiThread
+                            }
+                            isPublishing = true
+                            binding.btnStartCast.text = "停止投屏"
+                            if (!notifyPublishStarted()) {
+                                Toast.makeText(
+                                    this,
+                                    "信令已断开，投屏状态可能未同步",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                            // 立即向房间内已知设备发起 offer，不等待延迟 renegotiate
+                            manager.renegotiateAllPeers()
+                            rotationSensor?.let {
+                                sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
+                            }
+                        } catch (e: Exception) {
+                            isPublishing = false
+                            webrtcManager?.stopPublishing()
+                            binding.localPreview.visibility = View.GONE
+                            binding.tvEmptyHint.visibility = View.VISIBLE
+                            binding.btnStartCast.text = "开始投屏"
+                            Toast.makeText(this, "投屏失败: ${e.message}", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                } catch (e: Exception) {
+                    runOnUiThread {
+                        binding.btnStartCast.isEnabled = true
+                        Toast.makeText(this, "投屏失败: ${e.message}", Toast.LENGTH_LONG).show()
+                    }
                 }
-                manager.setKnownPeerIds(knownDeviceIds)
-                manager.prefetchIceServers()
-                binding.localPreview.visibility = View.VISIBLE
-                binding.tvEmptyHint.visibility = View.GONE
-                binding.remotePreview.visibility = View.GONE
-                if (!manager.startPublishing(segmentationEnabled)) {
-                    binding.localPreview.visibility = View.GONE
-                    binding.tvEmptyHint.visibility = View.VISIBLE
-                    Toast.makeText(this, "无法打开摄像头，请检查权限", Toast.LENGTH_LONG).show()
-                    return
-                }
-                isPublishing = true
-                binding.btnStartCast.text = "停止投屏"
-                signalingClient?.send(
-                    "publish_started",
-                    mapOf("hasAlpha" to segmentationEnabled)
-                )
-                signalingClient?.send(
-                    "device_update",
-                    mapOf("hasAlpha" to segmentationEnabled)
-                )
-                rotationSensor?.let { sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
-            } catch (e: Exception) {
-                isPublishing = false
-                binding.localPreview.visibility = View.GONE
-                binding.tvEmptyHint.visibility = View.VISIBLE
-                binding.btnStartCast.text = "开始投屏"
-                Toast.makeText(this, "投屏失败: ${e.message}", Toast.LENGTH_LONG).show()
-            }
+            }.start()
+        }
+    }
+
+    private fun applyRoomStateSync(msg: SignalingClient.SignalingMessage) {
+        if (isPublishing) return
+        msg.payload?.getAsJsonArray("publishers")?.forEach { el ->
+            val obj = el.asJsonObject
+            val publisherId = obj.get("deviceId")?.asString ?: return@forEach
+            if (publisherId == localDeviceId) return@forEach
+            knownDeviceIds.add(publisherId)
+            ensureWebRtcManager()
+            webrtcManager?.noteAwaitingPublisher(publisherId)
         }
     }
 
     private fun handleSignalingMessage(msg: SignalingClient.SignalingMessage) {
         when (msg.type) {
             "joined" -> {
+                isJoining = false
                 val device = msg.payload?.getAsJsonObject("device")
                 localDeviceId = device?.get("id")?.asString
                 val serverRoomId = msg.payload?.get("roomId")?.asString
                 binding.tvRoomId.text = "房间: $serverRoomId"
                 binding.tvLatency.text = "已连接"
+                binding.statusBar.visibility = View.VISIBLE
+                binding.joinPanel.visibility = View.GONE
+                binding.controlBar.visibility = View.VISIBLE
+                binding.tvEmptyHint.visibility = View.VISIBLE
+                binding.localPreview.visibility = View.GONE
+                setJoinUiEnabled(true)
 
                 // 重连时使用服务端确认的房间号，避免与电脑端不一致
                 serverRoomId?.let { rid ->
@@ -315,8 +389,11 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                 }
 
                 knownDeviceIds.clear()
+                val selfId = localDeviceId
                 msg.payload?.getAsJsonArray("devices")?.forEach { el ->
-                    el.asJsonObject.get("id")?.asString?.let { knownDeviceIds.add(it) }
+                    el.asJsonObject.get("id")?.asString?.let { id ->
+                        if (id != selfId) knownDeviceIds.add(id)
+                    }
                 }
                 localDeviceId?.let { id ->
                     if (webrtcManager != null) {
@@ -329,8 +406,9 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                 Thread {
                     val iceServers = IceConfigFetcher.fetch(SignalingConfig.getServerUrl())
                     runOnUiThread {
+                        webrtcManager?.resetPeerConnections()
                         webrtcManager?.setIceServers(iceServers)
-                        webrtcManager?.setKnownPeerIds(knownDeviceIds)
+                        webrtcManager?.setKnownPeerIds(knownDeviceIds.toSet())
                         if (shouldRenegotiate) {
                             signalingClient?.send(
                                 "publish_started",
@@ -342,9 +420,11 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                             )
                             webrtcManager?.renegotiateAllPeers()
                         }
+                        signalingClient?.send("sync_room_state", emptyMap())
                     }
                 }.start()
             }
+            "room_state_sync" -> applyRoomStateSync(msg)
             "peer_joined" -> {
                 val deviceId = msg.payload?.getAsJsonObject("device")?.get("id")?.asString
                 if (deviceId != null) {
@@ -353,6 +433,11 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                     webrtcManager?.notePeerJoined(deviceId)
                     webrtcManager?.handleSignalingMessage(msg)
                 }
+            }
+            "peer_left" -> {
+                val deviceId = msg.payload?.get("deviceId")?.asString ?: return
+                knownDeviceIds.remove(deviceId)
+                webrtcManager?.closePeer(deviceId)
             }
             "angle_guide" -> {
                 val payload = msg.payload ?: return
@@ -369,6 +454,14 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             }
             "error" -> {
                 Toast.makeText(this, msg.payload?.get("message")?.asString ?: "错误", Toast.LENGTH_SHORT).show()
+                if (localDeviceId == null) {
+                    signalingClient?.disconnect()
+                    signalingClient = null
+                    binding.joinPanel.visibility = View.VISIBLE
+                    binding.controlBar.visibility = View.GONE
+                    binding.statusBar.visibility = View.GONE
+                    finishJoinAttempt()
+                }
             }
         }
     }

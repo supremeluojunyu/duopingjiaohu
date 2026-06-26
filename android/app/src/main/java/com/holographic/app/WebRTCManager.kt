@@ -1,10 +1,14 @@
 package com.holographic.app
 
 import android.content.Context
+import android.os.Looper
 import android.util.Log
 import com.google.gson.JsonObject
 import org.webrtc.*
 import org.webrtc.PeerConnection.IceServer
+import java.util.concurrent.CopyOnWriteArraySet
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /**
  * WebRTC 管理器 — 摄像头采集、推流、接收远端画面
@@ -33,6 +37,7 @@ class WebRTCManager(
     private var localVideoTrack: VideoTrack? = null
     private var localAudioTrack: AudioTrack? = null
     private var videoCapturer: CameraVideoCapturer? = null
+    private var surfaceTextureHelper: SurfaceTextureHelper? = null
     private var videoSource: VideoSource? = null
     private var audioSource: AudioSource? = null
     private val peerConnections = mutableMapOf<String, PeerConnection>()
@@ -40,14 +45,71 @@ class WebRTCManager(
     private var isPublishing = false
     private var segmentationProcessor: SegmentationProcessor? = null
     private var receiveReady = false
-    private val knownPeerIds = mutableSetOf<String>()
+    private val knownPeerIds = CopyOnWriteArraySet<String>()
+    private val pendingSubscribers = CopyOnWriteArraySet<String>()
     private val makingOffer = mutableSetOf<String>()
+    private val pendingOfferRetries = mutableMapOf<String, Runnable>()
     private var localRendererInitialized = false
+    private var released = false
+
+    private inline fun safeRelease(label: String, block: () -> Unit) {
+        try {
+            block()
+        } catch (e: Exception) {
+            Log.w(TAG, "$label 释放失败: ${e.message}")
+        }
+    }
+
+    /** SurfaceViewRenderer.init 等必须在主线程执行；从子线程调用时会阻塞等待完成 */
+    private fun runOnMainThread(block: () -> Unit) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            block()
+            return
+        }
+        val latch = CountDownLatch(1)
+        mainHandler.post {
+            try {
+                block()
+            } finally {
+                latch.countDown()
+            }
+        }
+        latch.await(10, TimeUnit.SECONDS)
+    }
+
+    private fun initRemoteRendererOnMainThread() {
+        remoteRenderer?.let { renderer ->
+            renderer.init(eglBase.eglBaseContext, null)
+            renderer.setMirror(false)
+            renderer.setEnableHardwareScaler(true)
+        }
+    }
+
+    private fun initLocalRendererOnMainThread() {
+        if (localRendererInitialized) return
+        localRenderer.init(eglBase.eglBaseContext, null)
+        localRenderer.setMirror(true)
+        localRenderer.setEnableHardwareScaler(true)
+        localRendererInitialized = true
+    }
 
     private var iceServers: List<IceServer> = emptyList()
 
     fun setIceServers(servers: List<IceServer>) {
-        if (servers.isNotEmpty()) iceServers = servers
+        if (servers.isEmpty()) return
+        iceServers = servers
+        if (peerConnections.isEmpty()) return
+        val rtcConfig = PeerConnection.RTCConfiguration(servers).apply {
+            sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
+            continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
+        }
+        peerConnections.values.forEach { pc ->
+            try {
+                pc.setConfiguration(rtcConfig)
+            } catch (e: Exception) {
+                Log.w(TAG, "更新 ICE 配置失败: ${e.message}")
+            }
+        }
     }
 
     /** 仅使用已缓存 ICE，禁止在主线程发起网络请求（会触发 NetworkOnMainThreadException 闪退） */
@@ -74,18 +136,17 @@ class WebRTCManager(
     /** 加入房间后初始化，用于接收远端 offer */
     fun ensureReceiveReady() {
         if (receiveReady) return
-        try {
-            initializeFactory()
-            remoteRenderer?.let { renderer ->
-                renderer.init(eglBase.eglBaseContext, null)
-                renderer.setMirror(false)
-                renderer.setEnableHardwareScaler(true)
+        runOnMainThread {
+            if (receiveReady) return@runOnMainThread
+            try {
+                initializeFactory()
+                initRemoteRendererOnMainThread()
+                receiveReady = true
+                Log.i(TAG, "接收通道已就绪")
+                prefetchIceServers()
+            } catch (e: Exception) {
+                Log.e(TAG, "接收通道初始化失败", e)
             }
-            receiveReady = true
-            Log.i(TAG, "接收通道已就绪")
-            prefetchIceServers()
-        } catch (e: Exception) {
-            Log.e(TAG, "接收通道初始化失败", e)
         }
     }
 
@@ -115,10 +176,7 @@ class WebRTCManager(
             }
 
             if (!localRendererInitialized) {
-                localRenderer.init(eglBase.eglBaseContext, null)
-                localRenderer.setMirror(true)
-                localRenderer.setEnableHardwareScaler(true)
-                localRendererInitialized = true
+                runOnMainThread { initLocalRendererOnMainThread() }
             }
 
             val capturer = createCameraCapturer() ?: run {
@@ -127,13 +185,12 @@ class WebRTCManager(
             }
             videoCapturer = capturer
 
+            val textureHelper = SurfaceTextureHelper.create("CaptureThread", eglBase.eglBaseContext)
+            surfaceTextureHelper?.dispose()
+            surfaceTextureHelper = textureHelper
             val source = peerFactory.createVideoSource(capturer.isScreencast)
             videoSource = source
-            capturer.initialize(
-                SurfaceTextureHelper.create("CaptureThread", eglBase.eglBaseContext),
-                context,
-                source.capturerObserver
-            )
+            capturer.initialize(textureHelper, context, source.capturerObserver)
             val captureWidth = if (enableSegmentation) 640 else 1280
             val captureHeight = if (enableSegmentation) 480 else 720
             val captureFps = if (enableSegmentation) 24 else 30
@@ -167,15 +224,42 @@ class WebRTCManager(
             localAudioTrack = peerFactory.createAudioTrack("audio0", aSource)
 
             isPublishing = true
-            prefetchIceServers {
-                mainHandler.postDelayed({ renegotiateAllPeersSafe() }, 300)
-            }
             Log.i(TAG, "推流已开始")
             true
         } catch (e: Exception) {
             Log.e(TAG, "startPublishing 失败", e)
             stopPublishing()
             false
+        }
+    }
+
+    /** 作为订阅方等待发布端 offer；发送 subscribe 触发对方 re-offer */
+    fun noteAwaitingPublisher(publisherId: String) {
+        if (publisherId == localDeviceId) return
+        notePeerJoined(publisherId)
+        ensureReceiveReady()
+        val key = peerKey(publisherId)
+        val existing = peerConnections[key]
+        if (existing == null ||
+            existing.connectionState() == PeerConnection.PeerConnectionState.FAILED ||
+            existing.connectionState() == PeerConnection.PeerConnectionState.CLOSED ||
+            existing.connectionState() == PeerConnection.PeerConnectionState.DISCONNECTED
+        ) {
+            existing?.close()
+            peerConnections.remove(key)
+            peerConnections[key] = getOrCreatePeerConnection(publisherId)
+        }
+        if (!signaling.send(
+                "subscribe",
+                mapOf(
+                    "publisherId" to publisherId,
+                    "subscriberId" to localDeviceId,
+                    "streamType" to STREAM_TYPE
+                ),
+                to = publisherId
+            )
+        ) {
+            Log.w(TAG, "subscribe 发送失败(等待发布): $publisherId")
         }
     }
 
@@ -197,10 +281,13 @@ class WebRTCManager(
                     override fun onSetSuccess() {
                         makingOffer.remove(key)
                         sendSdp("offer", offer, publisherId)
-                        signaling.send(
-                            "subscribe",
-                            mapOf("publisherId" to publisherId, "streamType" to STREAM_TYPE)
-                        )
+                        if (!signaling.send(
+                                "subscribe",
+                                mapOf("publisherId" to publisherId, "streamType" to STREAM_TYPE)
+                            )
+                        ) {
+                            Log.w(TAG, "subscribe 发送失败: $publisherId")
+                        }
                     }
                     override fun onCreateFailure(error: String?) {
                         makingOffer.remove(key)
@@ -240,44 +327,129 @@ class WebRTCManager(
             "subscribe" -> {
                 val publisherId = msg.payload?.get("publisherId")?.asString ?: return
                 val subscriberId = msg.payload?.get("subscriberId")?.asString ?: return
-                if (publisherId == localDeviceId && subscriberId != localDeviceId && isPublishing) {
-                    offerStreamToPeer(subscriberId)
+                if (publisherId != localDeviceId || subscriberId == localDeviceId) return
+                notePeerJoined(subscriberId)
+                if (!isPublishing) {
+                    pendingSubscribers.add(subscriberId)
+                    Log.w(TAG, "收到 subscribe 但尚未推流，已排队: $subscriberId")
+                    return
                 }
+                offerStreamToPeer(subscriberId)
             }
         }
     }
 
+    /** 信令重连后重置协商状态，避免复用僵死 PeerConnection */
+    fun resetPeerConnections() {
+        pendingOfferRetries.values.forEach { mainHandler.removeCallbacks(it) }
+        pendingOfferRetries.clear()
+        makingOffer.clear()
+        pendingIce.clear()
+        pendingSubscribers.clear()
+        peerConnections.values.forEach { pc ->
+            try {
+                pc.close()
+            } catch (e: Exception) {
+                Log.w(TAG, "resetPeerConnections 关闭失败: ${e.message}")
+            }
+        }
+        peerConnections.clear()
+    }
+
+    fun closePeer(remoteId: String) {
+        val key = peerKey(remoteId)
+        pendingOfferRetries.remove(key)?.let { mainHandler.removeCallbacks(it) }
+        makingOffer.remove(key)
+        pendingIce.remove(key)
+        pendingSubscribers.remove(remoteId)
+        peerConnections.remove(key)?.close()
+    }
+
     fun stopPublishing() {
         isPublishing = false
-        videoCapturer?.stopCapture()
-        videoCapturer?.dispose()
-        videoCapturer = null
+        pendingSubscribers.clear()
+        pendingOfferRetries.values.forEach { mainHandler.removeCallbacks(it) }
+        pendingOfferRetries.clear()
 
-        videoSource?.setVideoProcessor(null)
-        segmentationProcessor?.release()
-        segmentationProcessor = null
+        safeRelease("videoCapturer") {
+            videoCapturer?.stopCapture()
+            videoCapturer?.dispose()
+            videoCapturer = null
+        }
 
-        localVideoTrack?.removeSink(localRenderer)
-        localVideoTrack?.dispose()
-        localAudioTrack?.dispose()
-        videoSource?.dispose()
-        audioSource?.dispose()
-        localVideoTrack = null
-        localAudioTrack = null
+        safeRelease("surfaceTextureHelper") {
+            surfaceTextureHelper?.dispose()
+            surfaceTextureHelper = null
+        }
+
+        safeRelease("segmentation") {
+            videoSource?.setVideoProcessor(null)
+            segmentationProcessor?.release()
+            segmentationProcessor = null
+        }
+
+        safeRelease("localTracks") {
+            localVideoTrack?.removeSink(localRenderer)
+            localVideoTrack?.dispose()
+            localVideoTrack = null
+            localAudioTrack?.dispose()
+            localAudioTrack = null
+        }
+
+        safeRelease("mediaSources") {
+            videoSource?.dispose()
+            videoSource = null
+            audioSource?.dispose()
+            audioSource = null
+        }
+
+        safeRelease("peerConnectionsOnStop") {
+            makingOffer.clear()
+            pendingIce.clear()
+            peerConnections.values.forEach { pc ->
+                try {
+                    pc.close()
+                } catch (e: Exception) {
+                    Log.w(TAG, "关闭 PeerConnection 失败: ${e.message}")
+                }
+            }
+            peerConnections.clear()
+        }
     }
 
     fun release() {
+        if (released) return
+        released = true
+
         stopPublishing()
-        peerConnections.values.forEach { it.close() }
-        peerConnections.clear()
-        pendingIce.clear()
-        makingOffer.clear()
-        factory?.dispose()
-        factory = null
+
+        safeRelease("peerConnections") {
+            peerConnections.values.forEach { pc ->
+                try {
+                    pc.close()
+                } catch (e: Exception) {
+                    Log.w(TAG, "PeerConnection 关闭失败: ${e.message}")
+                }
+            }
+            peerConnections.clear()
+            pendingIce.clear()
+            makingOffer.clear()
+        }
+
+        safeRelease("factory") {
+            factory?.dispose()
+            factory = null
+        }
+
         receiveReady = false
         localRendererInitialized = false
-        localRenderer.release()
-        remoteRenderer?.release()
+
+        safeRelease("localRenderer") {
+            localRenderer.release()
+        }
+        safeRelease("remoteRenderer") {
+            remoteRenderer?.release()
+        }
     }
 
     private fun initializeFactory() {
@@ -332,9 +504,17 @@ class WebRTCManager(
 
     private fun offerStreamToPeer(remoteId: String) {
         if (!isPublishing || remoteId == localDeviceId) return
+        val key = peerKey(remoteId)
         try {
             ensureReceiveReady()
-            val key = peerKey(remoteId)
+            if (makingOffer.contains(key)) {
+                pendingOfferRetries[key]?.let { mainHandler.removeCallbacks(it) }
+                val retry = Runnable { offerStreamToPeer(remoteId) }
+                pendingOfferRetries[key] = retry
+                mainHandler.postDelayed(retry, 400)
+                Log.d(TAG, "已有进行中的 offer，400ms 后重试: $remoteId")
+                return
+            }
             val pc = getOrCreatePeerConnection(remoteId)
             attachLocalTracks(pc)
             makingOffer.add(key)
@@ -346,6 +526,7 @@ class WebRTCManager(
                         override fun onCreateSuccess(desc: SessionDescription?) {}
                         override fun onSetSuccess() {
                             makingOffer.remove(key)
+                            pendingSubscribers.remove(remoteId)
                             sendSdp("offer", offer, remoteId)
                         }
                         override fun onCreateFailure(error: String?) {
@@ -368,6 +549,7 @@ class WebRTCManager(
                 }
             }, MediaConstraints())
         } catch (e: Exception) {
+            makingOffer.remove(key)
             Log.e(TAG, "offerStreamToPeer 失败: $remoteId", e)
         }
     }
@@ -379,7 +561,7 @@ class WebRTCManager(
     private fun renegotiateAllPeersSafe() {
         if (!isPublishing) return
         try {
-            val targets = (peerConnections.keys.map { it.substringBefore(':') } + knownPeerIds)
+            val targets = (peerConnections.keys.map { it.substringBefore(':') } + knownPeerIds + pendingSubscribers)
                 .filter { it != localDeviceId }
                 .distinct()
             Log.i(TAG, "向 ${targets.size} 个设备重协商推流: $targets")
@@ -391,7 +573,17 @@ class WebRTCManager(
 
     private fun getOrCreatePeerConnection(remoteId: String): PeerConnection {
         val key = peerKey(remoteId)
-        peerConnections[key]?.let { return it }
+        peerConnections[key]?.let { existing ->
+            when (existing.connectionState()) {
+                PeerConnection.PeerConnectionState.FAILED,
+                PeerConnection.PeerConnectionState.CLOSED,
+                PeerConnection.PeerConnectionState.DISCONNECTED -> {
+                    existing.close()
+                    peerConnections.remove(key)
+                }
+                else -> return existing
+            }
+        }
 
         val peerFactory = factory
         if (peerFactory == null) {
@@ -418,7 +610,9 @@ class WebRTCManager(
                         "targetId" to remoteId
                     ),
                     to = remoteId
-                )
+                ).let { ok ->
+                    if (!ok) Log.w(TAG, "ICE 候选发送失败: $remoteId")
+                }
             }
 
             override fun onAddTrack(receiver: RtpReceiver?, streams: Array<out MediaStream>?) {
@@ -440,7 +634,7 @@ class WebRTCManager(
             override fun onRemoveStream(stream: MediaStream?) {}
             override fun onDataChannel(channel: DataChannel?) {}
             override fun onRenegotiationNeeded() {}
-        })!!
+        }) ?: throw IllegalStateException("PeerConnection 创建失败: $remoteId")
 
         attachLocalTracks(pc)
         peerConnections[key] = pc
@@ -612,7 +806,7 @@ class WebRTCManager(
     }
 
     private fun sendSdp(type: String, sdp: SessionDescription, to: String) {
-        signaling.send(
+        val ok = signaling.send(
             type,
             mapOf(
                 "sdp" to mapOf("type" to sdp.type.canonicalForm(), "sdp" to sdp.description),
@@ -621,5 +815,8 @@ class WebRTCManager(
             ),
             to = to
         )
+        if (!ok) {
+            Log.w(TAG, "信令发送失败: $type -> $to")
+        }
     }
 }

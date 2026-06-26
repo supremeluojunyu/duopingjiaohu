@@ -259,9 +259,13 @@ export function useScene3D(
       renderer.domElement.removeEventListener('mousemove', onMouseMove);
       renderer.domElement.removeEventListener('mouseup', onMouseUp);
       renderer.domElement.removeEventListener('wheel', onWheel);
-      sceneRef.current?.streamObjects.forEach((o) => {
-        o.video.srcObject = null;
+      sceneRef.current?.streamObjects.forEach((obj) => {
+        if (obj.mesh) scene.remove(obj.mesh);
+        if (obj.points) scene.remove(obj.points);
+        disposeStreamDisplay(obj);
+        obj.video.srcObject = null;
       });
+      sceneRef.current?.streamObjects.clear();
       renderer.dispose();
       container.removeChild(renderer.domElement);
       sceneRef.current = null;

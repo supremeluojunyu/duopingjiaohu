@@ -39,9 +39,12 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok', ...getServerStats() });
 });
 
-app.get('/config/ice', (_req, res) => {
+function sendIceConfig(_req: express.Request, res: express.Response): void {
   res.json(getIceConfig());
-});
+}
+
+app.get('/config/ice', sendIceConfig);
+app.get('/api/ice', sendIceConfig);
 
 app.get('/stats', (_req, res) => {
   res.json(getServerStats());

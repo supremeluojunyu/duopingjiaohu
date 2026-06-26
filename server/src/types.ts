@@ -40,12 +40,18 @@ export interface AngleGuide {
   message?: string;
 }
 
+export interface PublisherState {
+  hasAlpha: boolean;
+}
+
 export interface RoomState {
   id: string;
   password?: string;
   devices: DeviceInfo[];
   mappings: StreamMapping[];
   presets: ScenePreset[];
+  /** 当前正在投屏的设备（deviceId -> 状态） */
+  publishers: Record<string, PublisherState>;
   createdAt: number;
 }
 
@@ -70,7 +76,10 @@ export type MessageType =
   | 'error'
   | 'role_change'
   | 'device_update'
-  | 'publish_started';
+  | 'publish_started'
+  | 'publish_stopped'
+  | 'sync_room_state'
+  | 'room_state_sync';
 
 export interface SignalingMessage {
   type: MessageType;

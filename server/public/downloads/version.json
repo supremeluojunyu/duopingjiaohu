@@ -1,10 +1,10 @@
 {
-  "versionName": "0.1.8.7",
-  "versionCode": 13,
-  "fileName": "holographic-0.1.8.7.apk",
-  "fileSize": 98729238,
-  "sha256": "47e488aa590d4668c772e0cfdd6be3a75e9f78034d3a0658416da504cee1af59",
-  "updatedAt": "2026-06-25T13:31:14.000Z",
+  "versionName": "0.1.8.8",
+  "versionCode": 14,
+  "fileName": "holographic-0.1.8.8.apk",
+  "fileSize": 0,
+  "sha256": "",
+  "updatedAt": "2026-06-26T11:46:16.000Z",
   "available": true,
-  "releaseNotes": "Android 客户端更新"
+  "releaseNotes": "修复手机投屏到 EXE 的信令/WebRTC 链路：subscribe 定向、publish_stopped、重连 PC 重置、去重 join、ICE 与 offer 竞态修复"
 }

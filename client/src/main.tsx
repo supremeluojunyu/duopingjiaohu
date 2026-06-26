@@ -19,6 +19,7 @@ import {
   RemoteStream,
   ScenePreset,
   StreamMapping,
+  StreamType,
 } from './types';
 import { drawChromaKeyedFrame } from './utils/chromaKeyMaterial';
 import './styles.css';
@@ -83,6 +84,43 @@ function formatJoinError(err: unknown): string {
     return err.message;
   }
   return '加入房间失败，请稍后重试';
+}
+
+function createDefaultMapping(
+  deviceId: string,
+  streamType: StreamType,
+  index: number,
+  total: number
+): StreamMapping {
+  const angleStep = 30;
+  const startAngle = -((total - 1) * angleStep) / 2;
+  const yaw = startAngle + index * angleStep;
+  const rad = (yaw * Math.PI) / 180;
+  const radius = 3;
+  return {
+    deviceId,
+    streamType,
+    position: { x: Math.sin(rad) * radius, y: 1.5, z: Math.cos(rad) * radius },
+    rotation: { yaw, pitch: 0, roll: 0 },
+    scale: 1.6,
+    visible: true,
+  };
+}
+
+async function resolveServerUrl(form: ReturnType<typeof getInitialJoinForm>): Promise<string> {
+  const api = (window as Window & { electronAPI?: { getSignalingUrl?: () => Promise<string> } })
+    .electronAPI;
+  if (api?.getSignalingUrl) {
+    try {
+      const fromIpc = (await api.getSignalingUrl())?.trim();
+      if (fromIpc) return fromIpc;
+    } catch {
+      /* fallback to query / form */
+    }
+  }
+  const fromQuery = new URLSearchParams(window.location.search).get('server')?.trim();
+  if (fromQuery) return fromQuery;
+  return form.serverUrl.trim();
 }
 
 function getInitialJoinForm() {
@@ -178,6 +216,21 @@ function App() {
   const sceneContainerRef = useRef<HTMLDivElement>(null);
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const autoJoinRef = useRef(false);
+  const localDeviceIdRef = useRef<string | null>(null);
+
+  const applyPublisherSync = useCallback(
+    (publishers: { deviceId: string; hasAlpha: boolean }[]) => {
+      const selfId = localDeviceIdRef.current;
+      for (const p of publishers) {
+        if (p.deviceId === selfId) continue;
+        setPublishingDevices((prev) => new Set(prev).add(p.deviceId));
+        setSubscribed((prev) => new Set(prev).add(p.deviceId));
+        webrtcRef.current?.setDeviceAlpha(p.deviceId, p.hasAlpha);
+        webrtcRef.current?.noteAwaitingPublisher(p.deviceId, 'camera');
+      }
+    },
+    []
+  );
 
   const getPeers = useCallback(
     () => webrtcRef.current?.getPeerConnections() ?? null,
@@ -214,12 +267,16 @@ function App() {
         setMappings(payload.mappings as StreamMapping[]);
         setPresets(payload.presets as ScenePreset[]);
         setConnected(true);
+        setSubscribed(new Set());
+        setPublishingDevices(new Set());
+        setIsPublishing(false);
 
         webrtcRef.current?.destroy();
         webrtcRef.current = null;
         setRemoteStreams(new Map());
 
         const dev = payload.device as DeviceInfo;
+        localDeviceIdRef.current = dev.id;
         if (signalingRef.current) {
           signalingRef.current.setJoinPayload({
             roomId: payload.roomId as string,
@@ -242,28 +299,32 @@ function App() {
               next.delete(publisherId);
               return next;
             });
-            setPublishingDevices((prev) => {
-              const next = new Set(prev);
-              next.delete(publisherId);
-              return next;
-            });
+            // 发布方可能仍在投屏，保留 publishingDevices 并尝试重新订阅
+            webrtcRef.current?.noteAwaitingPublisher(publisherId, 'camera');
           });
           webrtcRef.current = webrtc;
 
-          const mobileIds: string[] = [];
-          for (const d of allDevices) {
-            if (d.id === dev.id || !d.online || d.type !== 'mobile') continue;
-            webrtc.noteAwaitingPublisher(d.id, 'camera');
-            mobileIds.push(d.id);
-          }
-          setSubscribed(new Set(mobileIds));
+          signalingRef.current?.send({ type: 'sync_room_state', payload: {} });
         }
+        break;
+      }
+      case 'room_state_sync': {
+        const publishers = msg.payload.publishers as { deviceId: string; hasAlpha: boolean }[];
+        applyPublisherSync(publishers);
         break;
       }
       case 'peer_joined': {
         const d = msg.payload.device as DeviceInfo;
         setDevices((prev) => [...prev.filter((x) => x.id !== d.id), d]);
         webrtcRef.current?.setDeviceAlpha(d.id, d.hasAlpha);
+        setMappings((prev) => {
+          if (prev.some((m) => m.deviceId === d.id && m.streamType === 'camera')) return prev;
+          const visibleCount = prev.filter((m) => m.visible).length;
+          return [
+            ...prev,
+            createDefaultMapping(d.id, 'camera', visibleCount, visibleCount + 1),
+          ];
+        });
         break;
       }
       case 'peer_left': {
@@ -306,18 +367,19 @@ function App() {
       case 'role_change': {
         const d = msg.payload.device as DeviceInfo;
         setDevices((prev) => prev.map((x) => (x.id === d.id ? d : x)));
-        if (device?.id === d.id) setDevice(d);
+        if (localDeviceIdRef.current === d.id) setDevice(d);
         break;
       }
       case 'device_update': {
         const d = msg.payload.device as DeviceInfo;
         setDevices((prev) => prev.map((x) => (x.id === d.id ? d : x)));
-        if (device?.id === d.id) setDevice(d);
+        if (localDeviceIdRef.current === d.id) setDevice(d);
         webrtcRef.current?.setDeviceAlpha(d.id, d.hasAlpha);
         break;
       }
       case 'publish_started': {
         const publisherId = msg.payload.deviceId as string;
+        if (publisherId === localDeviceIdRef.current) break;
         setPublishingDevices((prev) => new Set(prev).add(publisherId));
         setSubscribed((prev) => new Set(prev).add(publisherId));
         webrtcRef.current?.setDeviceAlpha(
@@ -325,6 +387,22 @@ function App() {
           Boolean(msg.payload.hasAlpha)
         );
         webrtcRef.current?.noteAwaitingPublisher(publisherId, 'camera');
+        break;
+      }
+      case 'publish_stopped': {
+        const publisherId = msg.payload.deviceId as string;
+        if (publisherId === localDeviceIdRef.current) break;
+        setPublishingDevices((prev) => {
+          const next = new Set(prev);
+          next.delete(publisherId);
+          return next;
+        });
+        setSubscribed((prev) => {
+          const next = new Set(prev);
+          next.delete(publisherId);
+          return next;
+        });
+        webrtcRef.current?.unsubscribe(publisherId, 'camera');
         break;
       }
       case 'scene_save': {
@@ -336,7 +414,7 @@ function App() {
         alert(msg.payload.message as string);
         break;
     }
-  }, [device?.id]);
+  }, [applyPublisherSync]);
 
   useEffect(() => {
     if (!device || device.type !== 'mobile') return;
@@ -371,17 +449,31 @@ function App() {
     setJoining(true);
 
     try {
-      const network = await checkNetwork(form.serverUrl);
+      const serverUrl = await resolveServerUrl(form);
+      if (serverUrl !== form.serverUrl) {
+        setJoinForm((f) => ({ ...f, serverUrl }));
+      }
+      const network = await checkNetwork(serverUrl);
       if (!network.ok) {
         setJoinError(network.message);
         return;
       }
 
       const name = form.name.trim() || (form.type === 'mobile' ? '手机' : isHologram ? '全息显示端' : '电脑');
-      const signaling = new SignalingClient(form.serverUrl);
+      const signaling = new SignalingClient(serverUrl);
       signaling.setLatencyCallback(setLatency);
       signaling.setConnectionCallback(handleSignalConnection);
-      signaling.setReconnectExhaustedCallback(() => setSignalStatus('disconnected'));
+      signaling.setReconnectExhaustedCallback(() => {
+        setSignalStatus('disconnected');
+        setJoinError('信令连接已断开，请重新加入房间');
+        setConnected(false);
+        setRoomId(null);
+        setDevice(null);
+        webrtcRef.current?.destroy();
+        webrtcRef.current = null;
+        signalingRef.current?.disconnect();
+        signalingRef.current = null;
+      });
       signaling.onMessage(handleSignalingMessage);
 
       const joinPayload = {
@@ -399,10 +491,9 @@ function App() {
       await signaling.connect();
       signalingRef.current = signaling;
 
-      const iceServers = await fetchIceServers(form.serverUrl);
+      const iceServers = await fetchIceServers(serverUrl);
       pendingIceRef.current = iceServers;
-
-      signaling.send({ type: 'join', payload: joinPayload });
+      // join 由 connect() 的 onopen + lastJoinPayload 自动发送，避免重复 join 产生双设备
     } catch (err) {
       signalingRef.current?.disconnect();
       signalingRef.current = null;
@@ -459,21 +550,13 @@ function App() {
     webrtcRef.current?.stopPublishing();
     if (localVideoRef.current) localVideoRef.current.srcObject = null;
     setIsPublishing(false);
+    signalingRef.current?.send({ type: 'publish_stopped', payload: {} });
   };
 
   const handleSubscribe = useCallback(async (deviceId: string) => {
-    const target = devices.find((d) => d.id === deviceId);
     setSubscribed((prev) => new Set(prev).add(deviceId));
-    if (target?.type === 'mobile') {
-      webrtcRef.current?.noteAwaitingPublisher(deviceId, 'camera');
-      return;
-    }
-    await webrtcRef.current?.subscribe(deviceId, 'camera');
-    signalingRef.current?.send({
-      type: 'subscribe',
-      payload: { publisherId: deviceId, streamType: 'camera' },
-    });
-  }, [devices]);
+    webrtcRef.current?.noteAwaitingPublisher(deviceId, 'camera');
+  }, []);
 
   const handleUnsubscribe = (deviceId: string) => {
     webrtcRef.current?.unsubscribe(deviceId, 'camera');
@@ -495,19 +578,24 @@ function App() {
     });
   }, [isHologram, connected, joinForm.roomId]);
 
-  // 电脑端自动等待手机投屏；仅对其它电脑端主动订阅
+  // 手机开始/停止投屏后再次触发 subscribe
+  useEffect(() => {
+    if (!connected || !device || publishingDevices.size === 0) return;
+    for (const pubId of publishingDevices) {
+      if (pubId === device.id) continue;
+      webrtcRef.current?.noteAwaitingPublisher(pubId, 'camera');
+    }
+  }, [connected, device, publishingDevices]);
+
+  // 仅对已在投屏的其它电脑端主动订阅
   useEffect(() => {
     if (!connected || !device) return;
     for (const d of devices) {
       if (d.id === device.id || !d.online || subscribed.has(d.id)) continue;
-      if (d.type === 'mobile') {
-        webrtcRef.current?.noteAwaitingPublisher(d.id, 'camera');
-        setSubscribed((prev) => new Set(prev).add(d.id));
-      } else if (d.type === 'desktop') {
-        void handleSubscribe(d.id);
-      }
+      if (d.type !== 'desktop' || !publishingDevices.has(d.id)) continue;
+      void handleSubscribe(d.id);
     }
-  }, [connected, devices, device, subscribed, handleSubscribe]);
+  }, [connected, devices, device, subscribed, publishingDevices, handleSubscribe]);
 
   const handleMappingChange = (mapping: StreamMapping) => {
     signalingRef.current?.send({
@@ -858,7 +946,12 @@ function GridVideo({
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
-    if (ref.current) ref.current.srcObject = stream;
+    const video = ref.current;
+    if (!video) return;
+    video.srcObject = stream;
+    void video.play().catch(() => {
+      /* Electron 下 muted autoplay 偶发需显式 play */
+    });
   }, [stream]);
 
   useEffect(() => {

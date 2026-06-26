@@ -47,9 +47,13 @@ export class SignalingClient {
     this.lastJoinPayload = payload;
   }
 
-  send(msg: Omit<SignalingMessage, 'timestamp'>): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+  send(msg: Omit<SignalingMessage, 'timestamp'>): boolean {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      console.warn('[Signaling] send 失败，WebSocket 未连接:', msg.type);
+      return false;
+    }
     this.ws.send(JSON.stringify({ ...msg, timestamp: Date.now() }));
+    return true;
   }
 
   onMessage(handler: MessageHandler): () => void {

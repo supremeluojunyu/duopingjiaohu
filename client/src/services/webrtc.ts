@@ -31,6 +31,14 @@ export class WebRTCManager {
 
   setIceServers(servers: RTCIceServer[]): void {
     this.iceServers = servers;
+    const config: RTCConfiguration = { iceServers: servers };
+    for (const pc of this.peers.values()) {
+      try {
+        pc.setConfiguration(config);
+      } catch (err) {
+        console.warn('[WebRTC] 更新 ICE 配置失败', err);
+      }
+    }
   }
 
   getPeerConnections(): Map<string, RTCPeerConnection> {
@@ -143,7 +151,12 @@ export class WebRTCManager {
     if (publisherId === this.localDeviceId) return;
     const key = `${publisherId}:${streamType}`;
     let pc = this.peers.get(key);
-    if (!pc || pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+    if (
+      !pc ||
+      pc.connectionState === 'failed' ||
+      pc.connectionState === 'closed' ||
+      pc.connectionState === 'disconnected'
+    ) {
       pc?.close();
       this.peers.delete(key);
       this.remoteStreams.delete(key);
@@ -153,7 +166,7 @@ export class WebRTCManager {
     } else {
       this.ensureRecvTransceivers(pc);
     }
-    this.signaling.send({
+    const ok = this.signaling.send({
       type: 'subscribe',
       to: publisherId,
       payload: {
@@ -162,6 +175,9 @@ export class WebRTCManager {
         streamType,
       },
     });
+    if (!ok) {
+      console.warn('[WebRTC] subscribe 发送失败，等待发布端:', publisherId);
+    }
   }
 
   private ensureRecvTransceivers(pc: RTCPeerConnection): void {
@@ -222,6 +238,8 @@ export class WebRTCManager {
     if (!this.localStream || remoteId === this.localDeviceId) return;
 
     const key = `${remoteId}:${streamType}`;
+    if (this.makingOffer.has(key)) return;
+
     let pc = this.peers.get(key);
     if (!pc) {
       pc = this.createPeerConnection(remoteId, streamType);
@@ -327,11 +345,6 @@ export class WebRTCManager {
         if (device.id === this.localDeviceId) break;
         if (this.localStream) {
           await this.offerStreamToPeer(device.id, streamType);
-        } else if (device.type === 'desktop') {
-          await this.subscribe(device.id, streamType);
-        } else {
-          // 手机作为采集端：等对方点「开始投屏」后主动发 offer，电脑只应答
-          this.noteAwaitingPublisher(device.id, streamType);
         }
         break;
       }
@@ -402,7 +415,14 @@ export class WebRTCManager {
           await pc.setRemoteDescription(new RTCSessionDescription(sdp));
         } catch (err) {
           console.error('[WebRTC] setRemoteDescription(answer) failed', err);
+          return;
         }
+        const pending = this.pendingCandidates.get(key) ?? [];
+        for (const c of pending) {
+          await pc.addIceCandidate(new RTCIceCandidate(c));
+        }
+        this.pendingCandidates.delete(key);
+        this.makingOffer.delete(key);
         break;
       }
 
@@ -452,6 +472,9 @@ export class WebRTCManager {
     this.peers.forEach((pc) => pc.close());
     this.peers.clear();
     this.remoteStreams.clear();
+    this.pendingCandidates.clear();
+    this.makingOffer.clear();
+    this.deviceAlpha.clear();
   }
 }
 

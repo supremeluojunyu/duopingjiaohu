@@ -195,6 +195,7 @@ export function createSegmentedStream(
   let running = true;
   let processing = false;
   let frameCount = 0;
+  let hasSegmentedFrame = false;
 
   const drawRawFrame = () => {
     const ctx = canvas.getContext('2d');
@@ -209,15 +210,31 @@ export function createSegmentedStream(
     if (!processing && video.readyState >= 2) {
       processing = true;
       frameCount++;
+      // 每 2 帧推理 1 次，跳帧时复用上一帧抠图结果，避免闪烁
       const shouldSegment = frameCount % 2 === 1;
       try {
         if (shouldSegment) {
           await applySegmentationWithBlur(video, canvas);
+          hasSegmentedFrame = true;
+        } else if (hasSegmentedFrame) {
+          const ctx = canvas.getContext('2d');
+          if (ctx && video.videoWidth > 0) {
+            const w = video.videoWidth;
+            const h = video.videoHeight;
+            canvas.width = w;
+            canvas.height = h;
+            ctx.clearRect(0, 0, w, h);
+            ctx.filter = 'blur(20px)';
+            ctx.drawImage(video, 0, 0, w, h);
+            ctx.filter = 'none';
+            ctx.drawImage(personCanvas, 0, 0, w, h);
+          }
         } else {
           drawRawFrame();
         }
       } catch {
         drawRawFrame();
+        hasSegmentedFrame = false;
       }
       processing = false;
     }

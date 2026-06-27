@@ -37,7 +37,19 @@ class WebRTCManager(
             IceServer.builder("stun:stun3.l.google.com:19302").createIceServer(),
             IceServer.builder("stun:stun4.l.google.com:19302").createIceServer(),
             IceServer.builder("stun:stun.qq.com:3478").createIceServer(),
-            IceServer.builder("stun:stun.qq.com:19302").createIceServer()
+            IceServer.builder("stun:stun.qq.com:19302").createIceServer(),
+            IceServer.builder("turn:openrelay.metered.ca:80")
+                .setUsername("openrelayproject")
+                .setPassword("openrelayproject")
+                .createIceServer(),
+            IceServer.builder("turn:openrelay.metered.ca:443")
+                .setUsername("openrelayproject")
+                .setPassword("openrelayproject")
+                .createIceServer(),
+            IceServer.builder("turn:openrelay.metered.ca:443?transport=tcp")
+                .setUsername("openrelayproject")
+                .setPassword("openrelayproject")
+                .createIceServer()
         )
     }
 
@@ -219,6 +231,35 @@ class WebRTCManager(
     private fun sendOnlyMediaConstraints() = MediaConstraints().apply {
         mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", "false"))
         mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "false"))
+        optional.add(MediaConstraints.KeyValuePair("googCodec", "VP8"))
+    }
+
+    private fun logTransceivers(pc: PeerConnection, label: String) {
+        val lines = pc.transceivers.mapIndexed { i, t ->
+            "[$i] mid=${t.mid} dir=${t.direction} media=${t.mediaType} " +
+                "sender=${t.sender.track()?.kind() ?: "none"} recv=${t.receiver.track()?.kind() ?: "none"}"
+        }
+        Log.i(TAG, "$label transceivers(${pc.transceivers.size}): ${lines.joinToString("; ")}")
+    }
+
+    private fun preferVp8Codec(pc: PeerConnection) {
+        val peerFactory = factory ?: return
+        try {
+            val caps = peerFactory.getRtpSenderCapabilities(MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO)
+            val vp8 = caps.codecs.filter { it.name.equals("VP8", ignoreCase = true) }
+            if (vp8.isEmpty()) {
+                Log.w(TAG, "设备不支持 VP8，使用默认编码")
+                return
+            }
+            for (t in pc.transceivers) {
+                if (t.mediaType == MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO) {
+                    t.setCodecPreferences(vp8)
+                    Log.i(TAG, "已设置 VP8 编码偏好")
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "设置 VP8 偏好失败: ${e.message}")
+        }
     }
 
     private fun logVideoMLineDirection(sdp: String) {
@@ -274,6 +315,7 @@ class WebRTCManager(
 
             isPublishing = true
             Log.i(TAG, "推流已开始，本地预览已绑定")
+            renegotiateAllPeers()
             true
         } catch (e: Exception) {
             Log.e(TAG, "startPublishing 失败", e)
@@ -528,6 +570,9 @@ class WebRTCManager(
                 return
             }
             val pc = preparePublisherPeerConnection(remoteId)
+            attachLocalTracks(pc)
+            logTransceivers(pc, "createOffer 前")
+            preferVp8Codec(pc)
             Log.i(TAG, "准备向 $remoteId 发送 offer")
             makingOffer.add(key)
 
@@ -630,6 +675,13 @@ class WebRTCManager(
         val pc = peerFactory.createPeerConnection(rtcConfig, object : PeerConnection.Observer {
             override fun onIceCandidate(candidate: IceCandidate?) {
                 candidate ?: return
+                val candType = when {
+                    candidate.sdp.contains("typ relay") -> "relay"
+                    candidate.sdp.contains("typ srflx") -> "srflx"
+                    candidate.sdp.contains("typ host") -> "host"
+                    else -> "unknown"
+                }
+                Log.d(TAG, "ICE 候选 ($candType): $remoteId")
                 signaling.send(
                     "ice",
                     mapOf(
@@ -759,6 +811,7 @@ class WebRTCManager(
 
     private fun handleAnswer(msg: SignalingClient.SignalingMessage) {
         val from = msg.from ?: return
+        Log.i(TAG, "收到远端 answer: $from")
         val key = peerKey(from)
         val pc = peerConnections[key] ?: return
         val sdpJson = msg.payload?.getAsJsonObject("sdp") ?: return

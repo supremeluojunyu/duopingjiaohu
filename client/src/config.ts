@@ -20,6 +20,16 @@ export function getIceServers(): RTCIceServer[] {
       username: turnUser,
       credential: turnPass,
     });
+  } else {
+    servers.push({
+      urls: [
+        'turn:openrelay.metered.ca:80',
+        'turn:openrelay.metered.ca:443',
+        'turn:openrelay.metered.ca:443?transport=tcp',
+      ],
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    });
   }
 
   return servers;

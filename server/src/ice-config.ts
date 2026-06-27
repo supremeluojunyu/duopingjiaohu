@@ -24,6 +24,16 @@ export function getIceConfig(): IceConfig {
 
   if (turnUrl && turnUser && turnPass) {
     servers.push({ urls: turnUrl, username: turnUser, credential: turnPass });
+  } else {
+    servers.push({
+      urls: [
+        'turn:openrelay.metered.ca:80',
+        'turn:openrelay.metered.ca:443',
+        'turn:openrelay.metered.ca:443?transport=tcp',
+      ],
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    });
   }
 
   // 支持多个 TURN URL（逗号分隔）

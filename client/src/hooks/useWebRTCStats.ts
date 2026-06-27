@@ -81,17 +81,24 @@ export function useWebRTCStats(
           let codec = '';
 
           report.forEach((stat) => {
-            if (stat.type === 'inbound-rtp' && stat.kind === 'video') {
-              const bytes = stat.bytesReceived ?? 0;
+            const isVideoInbound =
+              stat.type === 'inbound-rtp' &&
+              (stat.kind === 'video' || (stat as { mediaType?: string }).mediaType === 'video');
+            if (isVideoInbound) {
+              const inbound = stat as RTCInboundRtpStreamStats;
+              const bytes = inbound.bytesReceived ?? 0;
               const prev = prevBytes.get(key) ?? bytes;
               if (dt > 0) bitrateKbps = ((bytes - prev) * 8) / dt / 1000;
               prevBytes.set(key, bytes);
-              fps = stat.framesPerSecond ?? 0;
-              packetsLost = stat.packetsLost ?? 0;
-              packetsReceived = stat.packetsReceived ?? 0;
-              jitterMs = Math.round((stat.jitter ?? 0) * 1000);
-              width = stat.frameWidth ?? 0;
-              height = stat.frameHeight ?? 0;
+              fps = inbound.framesPerSecond ?? 0;
+              packetsLost = inbound.packetsLost ?? 0;
+              packetsReceived = inbound.packetsReceived ?? 0;
+              jitterMs = Math.round((inbound.jitter ?? 0) * 1000);
+              width = inbound.frameWidth ?? 0;
+              height = inbound.frameHeight ?? 0;
+              if (bytes === 0 && packetsReceived === 0) {
+                console.warn('[WebRTC] 视频统计: 尚未收到数据', key);
+              }
             }
             if (stat.type === 'codec' && stat.mimeType?.startsWith('video/')) {
               codec = stat.mimeType.replace('video/', '');

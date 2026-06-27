@@ -641,7 +641,7 @@ class WebRTCManager(
             override fun onAddTrack(receiver: RtpReceiver?, streams: Array<out MediaStream>?) {
                 val track = receiver?.track()
                 Log.i(TAG, "收到远端轨道: $track, streams: ${streams?.size ?: 0}")
-                if (track is VideoTrack && remoteRenderer != null) {
+                if (track is VideoTrack && receiveReady && remoteRenderer != null) {
                     runOnMainThread {
                         initRemoteRendererOnMainThread()
                         track.addSink(remoteRenderer)

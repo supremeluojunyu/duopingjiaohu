@@ -80,6 +80,18 @@ function rebuildStreamDisplay(
   mapping: StreamMapping,
   effect: RenderEffect
 ): void {
+  if (obj.video.readyState < 2) {
+    const video = obj.video;
+    const onLoaded = () => {
+      video.removeEventListener('loadedmetadata', onLoaded);
+      console.log('[Scene3D] 视频元数据就绪，创建纹理:', `${mapping.deviceId}:${mapping.streamType}`);
+      rebuildStreamDisplay(ref, obj, remote, mapping, effect);
+    };
+    video.addEventListener('loadedmetadata', onLoaded);
+    console.log('[Scene3D] 等待视频元数据:', `${mapping.deviceId}:${mapping.streamType}`, 'readyState:', video.readyState);
+    return;
+  }
+
   if (obj.mesh) ref.scene.remove(obj.mesh);
   if (obj.points) ref.scene.remove(obj.points);
   disposeStreamDisplay(obj);
@@ -87,6 +99,7 @@ function rebuildStreamDisplay(
   const tex = new THREE.VideoTexture(obj.video);
   obj.texture = tex;
   obj.effect = effect;
+  console.log('[Scene3D] 纹理已创建:', `${mapping.deviceId}:${mapping.streamType}`, `${obj.video.videoWidth}x${obj.video.videoHeight}`);
 
   let displayObject: THREE.Object3D;
 
@@ -209,6 +222,7 @@ export function useScene3D(
       if (ref.frameTick % 3 === 0) {
         for (const [, obj] of ref.streamObjects) {
           if (obj.video.readyState < 2) continue;
+          if (obj.texture) obj.texture.needsUpdate = true;
           if (obj.effect === 'relief' && obj.reliefGeo) {
             const depth = sampleVideoDepth(obj.video);
             updateReliefGeometry(obj.reliefGeo, depth);
@@ -299,7 +313,18 @@ export function useScene3D(
 
       if (obj.video.srcObject !== remote.stream) {
         obj.video.srcObject = remote.stream;
-        obj.video.play().catch(() => {});
+        console.log('[Scene3D] 设置远端流:', key, 'readyState:', obj.video.readyState);
+      }
+      const playVideo = () => {
+        obj.video.play().catch((e) => {
+          console.warn('[Scene3D] 视频播放失败:', key, e);
+        });
+        if (obj.texture) obj.texture.needsUpdate = true;
+      };
+      if (obj.video.readyState >= 2) {
+        playVideo();
+      } else {
+        obj.video.onloadeddata = playVideo;
       }
 
       const displayObject = getStreamDisplayObject(obj);
@@ -326,11 +351,13 @@ export function useScene3D(
     if (!ref) return;
 
     const effect = toRenderEffect(viewMode);
+    const activeRemoteStreams = remoteStreamsRef.current;
+
     for (const mapping of mappingsRef.current) {
       if (!mapping.visible) continue;
       const key = `${mapping.deviceId}:${mapping.streamType}`;
       const obj = ref.streamObjects.get(key);
-      const remote = remoteStreamsRef.current.get(key);
+      const remote = activeRemoteStreams.get(key);
       if (!obj || !remote) continue;
       const displayObject = getStreamDisplayObject(obj);
       if (!displayObject || obj.effect !== effect) {
@@ -340,6 +367,26 @@ export function useScene3D(
       }
     }
   }, [viewMode]);
+
+  useEffect(() => {
+    const ref = sceneRef.current;
+    const container = containerRef.current;
+    if (!ref || !container || viewMode === 'grid') return;
+
+    const resize = () => {
+      const w = container.clientWidth;
+      const h = container.clientHeight;
+      if (w <= 0 || h <= 0) return;
+      ref.camera.aspect = w / h;
+      ref.camera.updateProjectionMatrix();
+      ref.renderer.setSize(w, h);
+    };
+
+    resize();
+    const observer = new ResizeObserver(resize);
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [viewMode, containerRef]);
 
   useEffect(() => {
     if (!backgroundStream || !sceneRef.current) return;

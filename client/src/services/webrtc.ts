@@ -343,15 +343,48 @@ export class WebRTCManager {
     pc.ontrack = (event) => {
       const track = event.track;
       track.enabled = true;
-      const stream = event.streams[0] ?? new MediaStream([track]);
-      this.remoteStreams.set(key, {
-        deviceId: remoteId,
-        streamType,
-        stream,
-        hasAlpha: this.deviceAlpha.get(remoteId) ?? false,
-      });
-      console.info('[WebRTC] ontrack', remoteId, track.kind, track.readyState);
-      this.notifyStreams();
+      console.log('[WebRTC] 收到远端轨道:', track.kind, track.label, 'enabled:', track.enabled);
+
+      const key = `${remoteId}:${streamType}`;
+      let stream = this.remoteStreams.get(key)?.stream;
+      if (!stream || !stream.getTracks().some((t) => t.id === track.id)) {
+        stream = new MediaStream([track]);
+      } else if (!stream.getTracks().includes(track)) {
+        stream.addTrack(track);
+      }
+      console.log('[WebRTC] 远端流 tracks:', stream.getTracks().length);
+
+      const publish = () => {
+        this.remoteStreams.set(key, {
+          deviceId: remoteId,
+          streamType,
+          stream: stream!,
+          hasAlpha: this.deviceAlpha.get(remoteId) ?? false,
+        });
+        console.info(
+          '[WebRTC] ontrack',
+          remoteId,
+          track.kind,
+          track.readyState,
+          'muted',
+          track.muted,
+          'enabled',
+          track.enabled
+        );
+        this.notifyStreams();
+      };
+
+      track.onunmute = () => {
+        console.info('[WebRTC] track unmuted', remoteId, track.kind);
+        publish();
+      };
+      track.onended = () => {
+        console.warn('[WebRTC] track ended', remoteId, track.kind);
+        this.remoteStreams.delete(key);
+        this.notifyStreams();
+      };
+
+      publish();
     };
 
     pc.onconnectionstatechange = () => {
@@ -424,10 +457,10 @@ export class WebRTCManager {
         console.log('[WebRTC] setRemoteDescription 成功，transceivers:', pc.getTransceivers().length);
 
         for (const t of pc.getTransceivers()) {
-          if (t.receiver.track?.kind === 'video') {
-            if (t.direction !== 'recvonly' && t.direction !== 'sendrecv') {
-              t.direction = 'recvonly';
-            }
+          const kind = t.receiver.track?.kind ?? t.sender.track?.kind;
+          if (kind !== 'video') continue;
+          if (t.direction === 'inactive' || t.direction === 'stopped') {
+            t.direction = 'recvonly';
           }
         }
 
@@ -438,10 +471,7 @@ export class WebRTCManager {
         this.pendingCandidates.delete(key);
         this.makingOffer.delete(key);
 
-        const answer = await pc.createAnswer({
-          offerToReceiveAudio: false,
-          offerToReceiveVideo: true,
-        });
+        const answer = await pc.createAnswer();
         console.log('[WebRTC] createAnswer 成功，answer SDP 长度:', answer.sdp?.length);
         await pc.setLocalDescription(answer);
 

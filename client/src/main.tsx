@@ -401,7 +401,6 @@ function App() {
             createDefaultMapping(publisherId, 'camera', visibleCount, visibleCount + 1),
           ];
         });
-        setViewMode('grid');
         webrtcRef.current?.noteAwaitingPublisher(publisherId, 'camera');
         break;
       }
@@ -795,23 +794,23 @@ function App() {
           </span>
         </div>
         <main className="viewport hologram-viewport">
-          {viewMode === 'grid' ? (
-            <div className="grid-view">
-              {[...remoteStreams.values()].map((rs) => (
-                <GridVideo
-                  key={`${rs.deviceId}:${rs.streamType}`}
-                  stream={rs.stream}
-                  label={rs.deviceId.slice(0, 8)}
-                  hasAlpha={rs.hasAlpha}
-                />
-              ))}
-              {remoteStreams.size === 0 && (
-                <div className="empty-viewport">等待采集端投屏并自动订阅…</div>
-              )}
-            </div>
-          ) : (
-            <div ref={sceneContainerRef} className="scene-container" />
-          )}
+          <div className={`grid-view viewport-layer ${viewMode === 'grid' ? 'active' : ''}`}>
+            {[...remoteStreams.values()].map((rs) => (
+              <GridVideo
+                key={`${rs.deviceId}:${rs.streamType}`}
+                stream={rs.stream}
+                label={rs.deviceId.slice(0, 8)}
+                hasAlpha={rs.hasAlpha}
+              />
+            ))}
+            {remoteStreams.size === 0 && viewMode === 'grid' && (
+              <div className="empty-viewport">等待采集端投屏并自动订阅…</div>
+            )}
+          </div>
+          <div
+            ref={sceneContainerRef}
+            className={`scene-container viewport-layer ${viewMode === 'grid' ? '' : 'active'}`}
+          />
         </main>
       </div>
     );
@@ -874,27 +873,27 @@ function App() {
         </aside>
 
         <main className="viewport">
-          {viewMode === 'grid' ? (
-            <div className="grid-view">
-              {[...remoteStreams.values()].map((rs) => (
-                <GridVideo
-                  key={`${rs.deviceId}:${rs.streamType}`}
-                  stream={rs.stream}
-                  label={rs.deviceId.slice(0, 8)}
-                  hasAlpha={rs.hasAlpha}
-                />
-              ))}
-              {remoteStreams.size === 0 && (
-                <div className="empty-viewport">
-                  {publishingDevices.size > 0
-                    ? '手机正在投屏，正在建立连接…'
-                    : '等待手机端点击「开始投屏」，或订阅其它电脑画面'}
-                </div>
-              )}
-            </div>
-          ) : (
-            <div ref={sceneContainerRef} className="scene-container" />
-          )}
+          <div className={`grid-view viewport-layer ${viewMode === 'grid' ? 'active' : ''}`}>
+            {[...remoteStreams.values()].map((rs) => (
+              <GridVideo
+                key={`${rs.deviceId}:${rs.streamType}`}
+                stream={rs.stream}
+                label={rs.deviceId.slice(0, 8)}
+                hasAlpha={rs.hasAlpha}
+              />
+            ))}
+            {remoteStreams.size === 0 && viewMode === 'grid' && (
+              <div className="empty-viewport">
+                {publishingDevices.size > 0
+                  ? '手机正在投屏，正在建立连接…'
+                  : '等待手机端点击「开始投屏」，或订阅其它电脑画面'}
+              </div>
+            )}
+          </div>
+          <div
+            ref={sceneContainerRef}
+            className={`scene-container viewport-layer ${viewMode === 'grid' ? '' : 'active'}`}
+          />
 
           {isPublishing && (
             <div className="local-preview">
@@ -946,6 +945,33 @@ function App() {
   );
 }
 
+function bindVideoToStream(video: HTMLVideoElement, stream: MediaStream): () => void {
+  video.srcObject = stream;
+  const play = () => {
+    void video.play().catch((e) => {
+      console.warn('[GridVideo] 视频播放失败:', e);
+    });
+  };
+  play();
+  video.addEventListener('loadedmetadata', play);
+  video.addEventListener('canplay', play);
+
+  const tracks = stream.getVideoTracks();
+  const onUnmute = () => play();
+  tracks.forEach((track) => {
+    track.onunmute = onUnmute;
+  });
+
+  return () => {
+    video.removeEventListener('loadedmetadata', play);
+    video.removeEventListener('canplay', play);
+    tracks.forEach((track) => {
+      track.onunmute = null;
+    });
+    video.srcObject = null;
+  };
+}
+
 function GridVideo({
   stream,
   label,
@@ -963,10 +989,7 @@ function GridVideo({
   useEffect(() => {
     const video = ref.current;
     if (!video) return;
-    video.srcObject = stream;
-    void video.play().catch(() => {
-      /* Electron 下 muted autoplay 偶发需显式 play */
-    });
+    return bindVideoToStream(video, stream);
   }, [stream]);
 
   useEffect(() => {
@@ -977,7 +1000,9 @@ function GridVideo({
 
     let raf = 0;
     const tick = () => {
-      drawChromaKeyedFrame(video, canvas);
+      if (video.readyState >= 2 && video.videoWidth > 0) {
+        drawChromaKeyedFrame(video, canvas);
+      }
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);

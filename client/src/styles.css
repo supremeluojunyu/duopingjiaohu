@@ -233,8 +233,7 @@ button.active { background: var(--primary); border-color: var(--primary); }
   height: 100vh;
 }
 
-.hologram-viewport .scene-container,
-.hologram-viewport .grid-view {
+.hologram-viewport .viewport-layer {
   height: 100vh;
 }
 
@@ -468,6 +467,20 @@ button.active { background: var(--primary); border-color: var(--primary); }
   flex: 1;
   position: relative;
   background: #060a12;
+}
+
+.viewport-layer {
+  position: absolute;
+  inset: 0;
+  display: none;
+}
+
+.viewport-layer.active {
+  display: block;
+}
+
+.viewport-layer.active.grid-view {
+  display: grid;
 }
 
 .scene-container {

@@ -1,10 +1,10 @@
 {
-  "versionName": "0.1.8.18",
-  "versionCode": 24,
-  "fileName": "holographic-0.1.8.18.apk",
+  "versionName": "0.1.8.19",
+  "versionCode": 25,
+  "fileName": "holographic-0.1.8.19.apk",
   "fileSize": 98745618,
-  "sha256": "cceabdc7e664221c13f7834855b9b57c53db340a93b44b92fb17e4f1afa6e05b",
-  "updatedAt": "2026-06-27T08:41:41.000Z",
+  "sha256": "8fc856528ab4115a3961a4a7bc942769dc54f1f719d8f23190234a8275138123",
+  "updatedAt": "2026-06-27T08:48:12.000Z",
   "available": true,
-  "releaseNotes": "v0.1.8.18 修复电脑无画面/抠图绿屏闪退"
+  "releaseNotes": "v0.1.8.19 Canvas抠图+Web纹理修复"
 }

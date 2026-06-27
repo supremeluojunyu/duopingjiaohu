@@ -460,7 +460,7 @@ export class WebRTCManager {
         for (const t of pc.getTransceivers()) {
           const kind = t.receiver.track?.kind ?? t.sender.track?.kind;
           if (kind !== 'video') continue;
-          if (t.direction === 'inactive' || t.direction === 'stopped') {
+          if (t.direction !== 'recvonly') {
             t.direction = 'recvonly';
           }
         }

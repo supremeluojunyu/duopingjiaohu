@@ -7,7 +7,6 @@ varying vec2 vUv;
 void main() {
   vec4 c = texture2D(map, vUv);
   float greenness = c.g - max(c.r, c.b);
-  float luma = dot(c.rgb, vec3(0.299, 0.587, 0.114));
 
   // 绿幕区域：平滑过渡为透明（仅抠绿幕，保留暗色人像细节）
   float key = smoothstep(0.08, 0.28, greenness) * step(0.22, c.g);
@@ -27,8 +26,8 @@ void main() {
 `;
 
 /** 视频纹理统一配置：线性滤波、关闭 mipmap（动态视频每帧更新） */
-export function configureVideoTexture(texture: THREE.VideoTexture): void {
-  texture.colorSpace = THREE.SRGBColorSpace;
+export function configureVideoTexture(texture: THREE.VideoTexture, forShader = false): void {
+  texture.colorSpace = forShader ? THREE.NoColorSpace : THREE.SRGBColorSpace;
   texture.minFilter = THREE.LinearFilter;
   texture.magFilter = THREE.LinearFilter;
   texture.generateMipmaps = false;
@@ -40,9 +39,8 @@ export function createVideoMaterial(
   hasAlpha: boolean,
   effect: 'plane' | 'relief' = 'plane'
 ): THREE.Material {
-  configureVideoTexture(texture);
-
   if (!hasAlpha) {
+    configureVideoTexture(texture, false);
     if (effect === 'relief') {
       return new THREE.MeshStandardMaterial({
         map: texture,
@@ -59,6 +57,7 @@ export function createVideoMaterial(
     });
   }
 
+  configureVideoTexture(texture, true);
   return new THREE.ShaderMaterial({
     uniforms: { map: { value: texture } },
     vertexShader: CHROMA_KEY_VERTEX,

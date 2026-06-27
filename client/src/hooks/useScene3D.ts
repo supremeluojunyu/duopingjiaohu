@@ -99,6 +99,7 @@ function rebuildStreamDisplay(
   const tex = new THREE.VideoTexture(obj.video);
   obj.texture = tex;
   obj.effect = effect;
+  tex.needsUpdate = true;
   console.log('[Scene3D] 纹理已创建:', `${mapping.deviceId}:${mapping.streamType}`, `${obj.video.videoWidth}x${obj.video.videoHeight}`);
 
   let displayObject: THREE.Object3D;
@@ -328,7 +329,11 @@ export function useScene3D(
       if (obj.video.readyState >= 2) {
         playVideo();
       } else {
-        obj.video.onloadeddata = playVideo;
+        const onLoaded = () => {
+          obj.video.removeEventListener('loadeddata', onLoaded);
+          playVideo();
+        };
+        obj.video.addEventListener('loadeddata', onLoaded);
       }
 
       const displayObject = getStreamDisplayObject(obj);

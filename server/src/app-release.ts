@@ -123,6 +123,33 @@ export function publishApkFromFile(
   return info;
 }
 
+export function publishApkFromBuffer(
+  buffer: Buffer,
+  meta: Pick<AppReleaseInfo, 'versionName' | 'versionCode' | 'releaseNotes'>
+): AppReleaseInfo {
+  ensureDownloadsDir();
+  const fileName = `holographic-${meta.versionName}.apk`;
+  const versionedPath = path.join(DOWNLOADS_DIR, fileName);
+  const latestPath = path.join(DOWNLOADS_DIR, LATEST_APK);
+
+  fs.writeFileSync(versionedPath, buffer);
+  fs.writeFileSync(latestPath, buffer);
+
+  const info: AppReleaseInfo = {
+    versionName: meta.versionName,
+    versionCode: meta.versionCode,
+    fileName,
+    fileSize: buffer.length,
+    sha256: crypto.createHash('sha256').update(buffer).digest('hex'),
+    updatedAt: new Date().toISOString(),
+    available: true,
+    releaseNotes: meta.releaseNotes,
+  };
+
+  writeReleaseInfo(info);
+  return info;
+}
+
 export function toPublicRelease(info: AppReleaseInfo, baseUrl: string) {
   const apkPath = resolveApkPath(info);
   const downloadUrl = info.available && apkPath

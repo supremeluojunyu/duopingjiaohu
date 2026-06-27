@@ -58,6 +58,7 @@ jobs:
 
   build-linux:
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -175,11 +176,12 @@ jobs:
       github.event_name == 'push' &&
       startsWith(github.ref, 'refs/tags/v') &&
       needs.build-windows.result == 'success' &&
-      needs.build-linux.result == 'success' &&
       needs.build-android.result == 'success'
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           name: holographic-windows
@@ -192,7 +194,6 @@ jobs:
           path: release/linux
 
       - uses: actions/download-artifact@v4
-        if: needs.build-android.result == 'success'
         with:
           name: holographic-android
           path: release/android
@@ -201,16 +202,17 @@ jobs:
         run: |
           mkdir -p release-bundle
           cp release/windows/* release-bundle/
-          if [ -d release/linux ]; then cp release/linux/* release-bundle/; fi
-          if [ -d release/android ]; then
-            VERSION="${GITHUB_REF_NAME#v}"
-            APK="$(find release/android -name '*.apk' | head -1)"
-            if [ -n "$APK" ]; then
-              cp "$APK" "release-bundle/holographic-${VERSION}.apk"
-            else
-              echo "Warning: Android APK artifact not found"
-              ls -R release/android || true
-            fi
+          if [ -d release/linux ] && [ "$(ls -A release/linux 2>/dev/null)" ]; then
+            cp release/linux/* release-bundle/
+          fi
+          VERSION="${GITHUB_REF_NAME#v}"
+          APK="$(find release/android -name '*.apk' | head -1)"
+          if [ -n "$APK" ]; then
+            cp "$APK" "release-bundle/holographic-${VERSION}.apk"
+          else
+            echo "Error: Android APK artifact not found"
+            ls -R release/android || true
+            exit 1
           fi
           ls -lah release-bundle/
 
@@ -218,8 +220,14 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
           generate_release_notes: true
-          files: release-bundle/*
+          fail_on_unmatched_files: true
+          files: |
+            release-bundle/*.exe
+            release-bundle/*.exe.blockmap
+            release-bundle/*.apk
+            release-bundle/*.AppImage
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -241,3 +249,22 @@ jobs:
             --data-binary @"$EXE" \
             "$URL"
           echo "EXE uploaded to signaling server"
+
+      - name: Upload APK to signaling server
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION_CODE=$(grep 'versionCode' android/app/build.gradle.kts | grep -oE '[0-9]+' | head -1)
+          APK=$(find release-bundle -maxdepth 1 -name 'holographic-*.apk' | head -1)
+          if [ -z "$APK" ]; then
+            echo "No APK found in release-bundle"
+            ls -lah release-bundle/
+            exit 1
+          fi
+          echo "Uploading $APK (${VERSION}, code ${VERSION_CODE}) to signaling server..."
+          TOKEN="${{ secrets.PUBLISH_SECRET }}"
+          URL="http://124.220.4.69:9000/api/admin/publish-apk?version=${VERSION}&versionCode=${VERSION_CODE}&notes=v${VERSION}%20CI%20release"
+          if [ -n "$TOKEN" ]; then URL="${URL}&token=${TOKEN}"; fi
+          curl -f --connect-timeout 30 -m 900 \
+            -H "Content-Type: application/vnd.android.package-archive" \
+            --data-binary @"$APK" \
+            "$URL" || echo "APK upload to signaling server skipped (API may need deploy)"

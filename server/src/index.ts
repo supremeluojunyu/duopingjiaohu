@@ -9,6 +9,7 @@ import { roomManager } from './room-manager.js';
 import {
   ensureDownloadsDir,
   getDownloadsDir,
+  publishApkFromBuffer,
   publishExeFromBuffer,
   readDesktopReleaseInfo,
   readReleaseInfo,
@@ -90,6 +91,40 @@ app.post(
     const info = publishExeFromBuffer(req.body, { versionName: version, releaseNotes: notes });
     console.log(`[Publish] EXE v${info.versionName} (${info.fileSize} bytes)`);
     res.json(toPublicDesktopRelease(info, getBaseUrl(req)));
+  }
+);
+
+app.post(
+  '/api/admin/publish-apk',
+  express.raw({ limit: '600mb', type: 'application/vnd.android.package-archive' }),
+  (req, res) => {
+    const token = String(req.query.token ?? '');
+    if (PUBLISH_SECRET && token !== PUBLISH_SECRET) {
+      res.status(401).json({ error: 'unauthorized' });
+      return;
+    }
+    const version = String(req.query.version ?? '');
+    if (!/^\d+\.\d+\.\d+\.\d+$/.test(version)) {
+      res.status(400).json({ error: 'invalid version, expected x.y.z.w' });
+      return;
+    }
+    const versionCode = Number(req.query.versionCode ?? 0);
+    if (!Number.isInteger(versionCode) || versionCode < 1) {
+      res.status(400).json({ error: 'invalid versionCode' });
+      return;
+    }
+    if (!Buffer.isBuffer(req.body) || req.body.length < 1024) {
+      res.status(400).json({ error: 'empty apk body' });
+      return;
+    }
+    const notes = String(req.query.notes ?? `Android v${version}`);
+    const info = publishApkFromBuffer(req.body, {
+      versionName: version,
+      versionCode,
+      releaseNotes: notes,
+    });
+    console.log(`[Publish] APK v${info.versionName} (${info.fileSize} bytes)`);
+    res.json(toPublicRelease(info, getBaseUrl(req)));
   }
 );
 

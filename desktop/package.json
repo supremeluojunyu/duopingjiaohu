@@ -1,6 +1,6 @@
 {
   "name": "@holographic/desktop",
-  "version": "0.1.8-14",
+  "version": "0.1.8-28",
   "private": true,
   "main": "main.js",
   "author": "Holographic System",
@@ -16,16 +16,44 @@
   "build": {
     "appId": "com.holographic.system",
     "productName": "全息投影系统",
-    "directories": { "output": "dist", "buildResources": "build" },
-    "files": ["main.js", "preload.js"],
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "preload.js"
+    ],
     "extraResources": [
-      { "from": "../client/dist", "to": "client", "filter": ["**/*"] }
+      {
+        "from": "../client/dist",
+        "to": "client",
+        "filter": [
+          "**/*"
+        ]
+      }
     ],
     "win": {
-      "target": [{ "target": "nsis", "arch": ["x64"] }, { "target": "portable", "arch": ["x64"] }]
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
     },
     "linux": {
-      "target": ["AppImage", "deb"],
+      "target": [
+        "AppImage",
+        "deb"
+      ],
       "category": "Video"
     },
     "nsis": {

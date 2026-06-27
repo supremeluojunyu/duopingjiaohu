@@ -424,7 +424,7 @@ class WebRTCManager(
                     Log.w(TAG, "收到 subscribe 但尚未推流，已排队: $subscriberId")
                     return
                 }
-                offerStreamToPeer(subscriberId)
+                offerStreamToPeer(subscriberId, respondToSubscribe = true)
             }
         }
     }
@@ -603,12 +603,13 @@ class WebRTCManager(
             pc.signalingState() == PeerConnection.SignalingState.STABLE
     }
 
-    private fun offerStreamToPeer(remoteId: String) {
+    private fun offerStreamToPeer(remoteId: String, respondToSubscribe: Boolean = false) {
         if (!isPublishing || remoteId == localDeviceId) return
         val key = peerKey(remoteId)
 
         peerConnections[key]?.let { existing ->
-            if (isCastConnected(existing)) {
+            // 仅当非 subscribe 触发且已稳定连接时才跳过；subscribe 必须响应（电脑可能重建了 PC）
+            if (!respondToSubscribe && isCastConnected(existing)) {
                 Log.i(TAG, "已与 $remoteId 连接，跳过 offer")
                 pendingSubscribers.remove(remoteId)
                 return
@@ -617,6 +618,11 @@ class WebRTCManager(
             if (existing.signalingState() == PeerConnection.SignalingState.HAVE_LOCAL_OFFER) {
                 Log.i(TAG, "offer 已发出，等待 $remoteId answer")
                 return
+            }
+            // subscribe 触发且旧连接不可用：重置后重建
+            if (respondToSubscribe && !isCastConnected(existing)) {
+                Log.i(TAG, "subscribe 触发，重置不可用连接: $remoteId")
+                resetPublisherPeerConnection(remoteId)
             }
         }
 

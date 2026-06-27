@@ -3,6 +3,16 @@ import { SignalingMessage } from '../types';
 
 type MessageHandler = (msg: SignalingMessage) => void;
 
+function normalizeSignalingWsUrl(serverUrl: string): string {
+  let url = serverUrl.trim().replace(/\/+$/, '');
+  if (url.startsWith('https://')) url = `wss://${url.slice(8)}`;
+  else if (url.startsWith('http://')) url = `ws://${url.slice(7)}`;
+  else if (!url.startsWith('ws://') && !url.startsWith('wss://')) url = `ws://${url}`;
+  url = url.replace(/\/ws\/ws$/i, '/ws');
+  if (!url.endsWith('/ws')) url += '/ws';
+  return url;
+}
+
 export class SignalingClient {
   private ws: WebSocket | null = null;
   private handlers = new Set<MessageHandler>();
@@ -73,7 +83,7 @@ export class SignalingClient {
   }
 
   private openSocket(): void {
-    const url = this.serverUrl.replace(/^http/, 'ws') + '/ws';
+    const url = normalizeSignalingWsUrl(this.serverUrl);
     this.ws = new WebSocket(url);
 
     this.ws.onopen = () => {

@@ -7,6 +7,9 @@ server/dist/
 .env.local
 .DS_Store
 *.apk
+*.exe
+server/public/downloads/*.exe
+server/public/downloads/HolographicSystem-*
 desktop/dist/
 android/.gradle/
 android/app/build/

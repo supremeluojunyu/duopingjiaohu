@@ -21,7 +21,6 @@ import {
   StreamMapping,
   StreamType,
 } from './types';
-import { drawChromaKeyedFrame } from './utils/chromaKeyMaterial';
 import './styles.css';
 
 const DEFAULT_SERVER = DEFAULT_SIGNALING_URL;
@@ -221,6 +220,9 @@ function App() {
   const applyPublisherSync = useCallback(
     (publishers: { deviceId: string; hasAlpha: boolean }[]) => {
       const selfId = localDeviceIdRef.current;
+      if (publishers.length > 0) {
+        setViewMode('grid');
+      }
       for (const p of publishers) {
         if (p.deviceId === selfId) continue;
         setPublishingDevices((prev) => new Set(prev).add(p.deviceId));
@@ -400,6 +402,8 @@ function App() {
             createDefaultMapping(publisherId, 'camera', visibleCount, visibleCount + 1),
           ];
         });
+        // 收到远端投屏后切到网格，确保画面立即可见
+        setViewMode('grid');
         webrtcRef.current?.requestMobileStream(publisherId, 'camera');
         break;
       }
@@ -778,7 +782,6 @@ function App() {
                 key={`${rs.deviceId}:${rs.streamType}`}
                 stream={rs.stream}
                 label={rs.deviceId.slice(0, 8)}
-                hasAlpha={rs.hasAlpha}
               />
             ))}
             {remoteStreams.size === 0 && viewMode === 'grid' && (
@@ -857,7 +860,6 @@ function App() {
                 key={`${rs.deviceId}:${rs.streamType}`}
                 stream={rs.stream}
                 label={rs.deviceId.slice(0, 8)}
-                hasAlpha={rs.hasAlpha}
               />
             ))}
             {remoteStreams.size === 0 && viewMode === 'grid' && (
@@ -901,7 +903,6 @@ function App() {
                 stream={rs.stream}
                 label={rs.deviceId.slice(0, 8)}
                 small
-                hasAlpha={rs.hasAlpha}
               />
             ))}
           </div>
@@ -955,15 +956,12 @@ function GridVideo({
   stream,
   label,
   small,
-  hasAlpha = false,
 }: {
   stream: MediaStream;
   label: string;
   small?: boolean;
-  hasAlpha?: boolean;
 }) {
   const ref = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
     const video = ref.current;
@@ -971,33 +969,9 @@ function GridVideo({
     return bindVideoToStream(video, stream);
   }, [stream, stream.getVideoTracks()[0]?.id]);
 
-  useEffect(() => {
-    if (!hasAlpha) return;
-    const video = ref.current;
-    const canvas = canvasRef.current;
-    if (!video || !canvas) return;
-
-    let raf = 0;
-    const tick = () => {
-      if (video.readyState >= 2 && video.videoWidth > 0) {
-        drawChromaKeyedFrame(video, canvas);
-      }
-      raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [hasAlpha, stream]);
-
   return (
-    <div className={`grid-video ${small ? 'small' : ''} ${hasAlpha ? 'chroma' : ''}`}>
-      {hasAlpha ? (
-        <>
-          <video ref={ref} autoPlay playsInline muted hidden />
-          <canvas ref={canvasRef} />
-        </>
-      ) : (
-        <video ref={ref} autoPlay playsInline muted />
-      )}
+    <div className={`grid-video ${small ? 'small' : ''}`}>
+      <video ref={ref} autoPlay playsInline muted />
       <span>{label}</span>
     </div>
   );

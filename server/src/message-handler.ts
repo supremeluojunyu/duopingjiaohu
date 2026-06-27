@@ -10,6 +10,12 @@ function parseMessage(data: WebSocket.RawData): SignalingMessage | null {
   }
 }
 
+function traceCast(roomId: string, from: string, type: string, to: string | undefined): void {
+  if (type === 'subscribe' || type === 'offer' || type === 'answer' || type === 'ice' || type === 'publish_started') {
+    console.log(`[cast] room=${roomId} ${from} -> ${to ?? '*'} : ${type}`);
+  }
+}
+
 function error(ws: WebSocket, message: string): void {
   roomManager.sendToClient(ws, {
     type: 'error',
@@ -112,6 +118,7 @@ export function handleMessage(ws: WebSocket, raw: WebSocket.RawData): void {
         error(ws, '缺少目标设备 ID');
         return;
       }
+      traceCast(client.roomId, client.deviceId, msg.type, to);
       const sent = roomManager.sendToDeviceInRoom(client.roomId, to, {
         ...msg,
         from: client.deviceId,
@@ -142,6 +149,7 @@ export function handleMessage(ws: WebSocket, raw: WebSocket.RawData): void {
         from: client.deviceId,
       };
       const to = msg.to ?? (msg.payload.publisherId as string | undefined);
+      traceCast(client.roomId, client.deviceId, msg.type, to);
       if (to) {
         const sent = roomManager.sendToDeviceInRoom(client.roomId, to, message);
         if (!sent) {
@@ -266,6 +274,7 @@ export function handleMessage(ws: WebSocket, raw: WebSocket.RawData): void {
         client.deviceId,
         Boolean(msg.payload.hasAlpha)
       );
+      traceCast(client.roomId, client.deviceId, 'publish_started', undefined);
       roomManager.broadcast(
         client.roomId,
         {

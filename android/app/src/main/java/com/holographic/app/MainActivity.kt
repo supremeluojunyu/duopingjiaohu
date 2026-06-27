@@ -315,6 +315,9 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                                 binding.localPreview.postDelayed({
                                     manager.refreshLocalPreview()
                                 }, 150)
+                                binding.localPreview.postDelayed({
+                                    manager.refreshLocalPreview()
+                                }, 800)
                                 if (!notifyPublishStarted()) {
                                     Toast.makeText(
                                         this,
@@ -322,6 +325,9 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                                         Toast.LENGTH_LONG
                                     ).show()
                                 }
+                                binding.localPreview.postDelayed({
+                                    manager.renegotiateAllPeers()
+                                }, 600)
                                 rotationSensor?.let {
                                     sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
                                 }

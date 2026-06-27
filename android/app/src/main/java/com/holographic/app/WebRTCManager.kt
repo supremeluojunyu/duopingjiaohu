@@ -122,23 +122,36 @@ class WebRTCManager(
 
     private fun waitForLocalSurfaceReady(onReady: () -> Unit) {
         runOnMainThread {
-            if (localRenderer.width > 0 && localRenderer.height > 0) {
+            val finish = {
                 initLocalRendererOnMainThread()
                 onReady()
+            }
+            if (localRenderer.width > 0 && localRenderer.height > 0) {
+                finish()
                 return@runOnMainThread
             }
+            var done = false
+            val timeout = Runnable {
+                if (done) return@Runnable
+                done = true
+                Log.w(TAG, "本地 Surface 等待超时，强制开始采集")
+                finish()
+            }
+            mainHandler.postDelayed(timeout, 2000)
             val observer = localRenderer.viewTreeObserver
             observer.addOnGlobalLayoutListener(object : ViewTreeObserver.OnGlobalLayoutListener {
                 override fun onGlobalLayout() {
                     if (localRenderer.width <= 0 || localRenderer.height <= 0) return
+                    if (done) return
+                    done = true
+                    mainHandler.removeCallbacks(timeout)
                     if (observer.isAlive) {
                         observer.removeOnGlobalLayoutListener(this)
                     } else {
                         localRenderer.viewTreeObserver.removeOnGlobalLayoutListener(this)
                     }
-                    initLocalRendererOnMainThread()
                     Log.i(TAG, "本地 Surface 就绪: ${localRenderer.width}x${localRenderer.height}")
-                    onReady()
+                    finish()
                 }
             })
         }
@@ -556,14 +569,10 @@ class WebRTCManager(
         if (!isPublishing || remoteId == localDeviceId) return
         val key = peerKey(remoteId)
         peerConnections[key]?.let { existing ->
-            when (existing.connectionState()) {
-                PeerConnection.PeerConnectionState.CONNECTED,
-                PeerConnection.PeerConnectionState.CONNECTING -> {
-                    Log.i(TAG, "已与 $remoteId 连接中，跳过重复 offer")
-                    pendingSubscribers.remove(remoteId)
-                    return
-                }
-                else -> {}
+            if (existing.connectionState() == PeerConnection.PeerConnectionState.CONNECTED) {
+                Log.i(TAG, "已与 $remoteId 连接，跳过重复 offer")
+                pendingSubscribers.remove(remoteId)
+                return
             }
             if (existing.signalingState() == PeerConnection.SignalingState.HAVE_LOCAL_OFFER) {
                 Log.i(TAG, "等待 $remoteId 的 answer，跳过重复 offer")
@@ -747,8 +756,12 @@ class WebRTCManager(
                 when (state) {
                     PeerConnection.IceConnectionState.CONNECTED ->
                         Log.i(TAG, "ICE 连接已建立: $remoteId")
-                    PeerConnection.IceConnectionState.FAILED ->
-                        Log.e(TAG, "ICE 连接失败: $remoteId")
+                    PeerConnection.IceConnectionState.FAILED -> {
+                        Log.e(TAG, "ICE 连接失败: $remoteId，1.5s 后重试 offer")
+                        if (isPublishing) {
+                            mainHandler.postDelayed({ offerStreamToPeer(remoteId) }, 1500)
+                        }
+                    }
                     else ->
                         Log.d(TAG, "ICE 连接状态 $remoteId: $state")
                 }

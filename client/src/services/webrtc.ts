@@ -152,25 +152,27 @@ export class WebRTCManager {
     if (publisherId === this.localDeviceId) return;
     const key = `${publisherId}:${streamType}`;
     const pc = this.peers.get(key);
-    if (pc) {
-      if (
-        pc.connectionState === 'connected' ||
-        pc.connectionState === 'connecting' ||
-        pc.signalingState === 'have-remote-offer'
-      ) {
-        console.log('[WebRTC] 已在订阅/连接中，跳过重复 subscribe:', publisherId);
-        return;
-      }
-      if (
-        pc.connectionState === 'failed' ||
+    if (pc?.connectionState === 'connected') {
+      console.log('[WebRTC] 已连接，跳过 subscribe:', publisherId);
+      return;
+    }
+    if (
+      pc &&
+      (pc.signalingState === 'have-local-offer' || pc.signalingState === 'have-remote-offer')
+    ) {
+      console.log('[WebRTC] SDP 协商中，跳过 subscribe:', publisherId);
+      return;
+    }
+    if (
+      pc &&
+      (pc.connectionState === 'failed' ||
         pc.connectionState === 'closed' ||
-        pc.connectionState === 'disconnected'
-      ) {
-        pc.close();
-        this.peers.delete(key);
-        this.remoteStreams.delete(key);
-        this.stopStatsMonitor(key);
-      }
+        pc.connectionState === 'disconnected')
+    ) {
+      pc.close();
+      this.peers.delete(key);
+      this.remoteStreams.delete(key);
+      this.stopStatsMonitor(key);
     }
     const ok = this.signaling.send({
       type: 'subscribe',

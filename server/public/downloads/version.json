@@ -1,10 +1,10 @@
 {
-  "versionName": "0.1.8.9",
-  "versionCode": 15,
-  "fileName": "holographic-0.1.8.9.apk",
+  "versionName": "0.1.8.10",
+  "versionCode": 16,
+  "fileName": "holographic-0.1.8.10.apk",
   "fileSize": 0,
   "sha256": "",
-  "updatedAt": "2026-06-26T12:00:00.000Z",
+  "updatedAt": "2026-06-27T06:00:00.000Z",
   "available": true,
-  "releaseNotes": "修复投屏无画面：电脑端 SDP 应答协商、手机本地预览 Surface 初始化"
+  "releaseNotes": "修复投屏无画面（SDP 协商 + 手机本地预览）；重试 CI 发布"
 }

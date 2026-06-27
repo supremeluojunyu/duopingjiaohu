@@ -226,7 +226,7 @@ function App() {
         setPublishingDevices((prev) => new Set(prev).add(p.deviceId));
         setSubscribed((prev) => new Set(prev).add(p.deviceId));
         webrtcRef.current?.setDeviceAlpha(p.deviceId, p.hasAlpha);
-        webrtcRef.current?.noteAwaitingPublisher(p.deviceId, 'camera');
+        webrtcRef.current?.requestMobileStream(p.deviceId, 'camera');
       }
     },
     []
@@ -300,15 +300,6 @@ function App() {
             });
           }
           webrtc.setRemoteStreamCallback(setRemoteStreams);
-          webrtc.setPeerFailedCallback((publisherId) => {
-            setSubscribed((prev) => {
-              const next = new Set(prev);
-              next.delete(publisherId);
-              return next;
-            });
-            // 发布方可能仍在投屏，保留 publishingDevices 并尝试重新订阅
-            webrtcRef.current?.noteAwaitingPublisher(publisherId, 'camera');
-          });
           webrtcRef.current = webrtc;
 
           signalingRef.current?.send({ type: 'sync_room_state', payload: {} });
@@ -332,10 +323,6 @@ function App() {
             createDefaultMapping(d.id, 'camera', visibleCount, visibleCount + 1),
           ];
         });
-        // 手机加入房间后提前 subscribe，投屏开始时 Android 即可向本端发送 offer
-        if (d.type === 'mobile' && d.id !== localDeviceIdRef.current) {
-          webrtcRef.current?.noteAwaitingPublisher(d.id, 'camera');
-        }
         break;
       }
       case 'peer_left': {
@@ -405,7 +392,7 @@ function App() {
             createDefaultMapping(publisherId, 'camera', visibleCount, visibleCount + 1),
           ];
         });
-        webrtcRef.current?.noteAwaitingPublisher(publisherId, 'camera');
+        webrtcRef.current?.requestMobileStream(publisherId, 'camera');
         break;
       }
       case 'publish_stopped': {
@@ -529,18 +516,6 @@ function App() {
         webrtcRef.current.setIceServers(pendingIceRef.current);
       }
       webrtcRef.current.setRemoteStreamCallback(setRemoteStreams);
-      webrtcRef.current.setPeerFailedCallback((publisherId) => {
-        setSubscribed((prev) => {
-          const next = new Set(prev);
-          next.delete(publisherId);
-          return next;
-        });
-        setPublishingDevices((prev) => {
-          const next = new Set(prev);
-          next.delete(publisherId);
-          return next;
-        });
-      });
     }
 
     const streamTypes: ('camera' | 'screen')[] = includeScreen ? ['camera', 'screen'] : ['camera'];
@@ -571,9 +546,9 @@ function App() {
     signalingRef.current?.send({ type: 'publish_stopped', payload: {} });
   };
 
-  const handleSubscribe = useCallback(async (deviceId: string) => {
+  const handleSubscribe = useCallback((deviceId: string) => {
     setSubscribed((prev) => new Set(prev).add(deviceId));
-    webrtcRef.current?.noteAwaitingPublisher(deviceId, 'camera');
+    webrtcRef.current?.requestMobileStream(deviceId, 'camera');
   }, []);
 
   const handleUnsubscribe = (deviceId: string) => {
@@ -595,15 +570,6 @@ function App() {
       asAdmin: false,
     });
   }, [isHologram, connected, joinForm.roomId]);
-
-  // 手机开始/停止投屏后再次触发 subscribe
-  useEffect(() => {
-    if (!connected || !device || publishingDevices.size === 0) return;
-    for (const pubId of publishingDevices) {
-      if (pubId === device.id) continue;
-      webrtcRef.current?.noteAwaitingPublisher(pubId, 'camera');
-    }
-  }, [connected, device, publishingDevices]);
 
   // 仅对已在投屏的其它电脑端主动订阅
   useEffect(() => {

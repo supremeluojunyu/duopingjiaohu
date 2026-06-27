@@ -120,34 +120,53 @@ class WebRTCManager(
         Log.i(TAG, "本地渲染器已 init (${localRenderer.width}x${localRenderer.height})")
     }
 
-    /** 仅在 Surface 有效尺寸时 init/addSink，避免 0x0 时 native 闪退 */
+    /** 仅在 Surface 有效尺寸时 init/addSink，避免 0x0 时 native 闪退；轮询 + layout 双保险 */
     private fun bindLocalPreviewWhenReady(videoTrack: VideoTrack) {
         runOnMainThread {
-            fun doBind() {
-                if (localRenderer.width <= 0 || localRenderer.height <= 0) return
+            var bound = false
+            var layoutListener: ViewTreeObserver.OnGlobalLayoutListener? = null
+
+            fun doBind(): Boolean {
+                if (bound) return true
+                if (localRenderer.width <= 0 || localRenderer.height <= 0) return false
                 initLocalRendererOnMainThread()
                 videoTrack.removeSink(localRenderer)
                 videoTrack.addSink(localRenderer)
                 localRenderer.requestLayout()
-                Log.i(TAG, "本地预览已绑定 (${localRenderer.width}x${localRenderer.height})")
-            }
-            if (localRenderer.width > 0 && localRenderer.height > 0) {
-                doBind()
-                return@runOnMainThread
-            }
-            val observer = localRenderer.viewTreeObserver
-            observer.addOnGlobalLayoutListener(object : ViewTreeObserver.OnGlobalLayoutListener {
-                override fun onGlobalLayout() {
-                    if (localRenderer.width <= 0 || localRenderer.height <= 0) return
-                    if (observer.isAlive) {
-                        observer.removeOnGlobalLayoutListener(this)
-                    } else {
-                        localRenderer.viewTreeObserver.removeOnGlobalLayoutListener(this)
+                bound = true
+                layoutListener?.let { listener ->
+                    if (localRenderer.viewTreeObserver.isAlive) {
+                        localRenderer.viewTreeObserver.removeOnGlobalLayoutListener(listener)
                     }
-                    Log.i(TAG, "本地 Surface 就绪: ${localRenderer.width}x${localRenderer.height}")
-                    doBind()
                 }
-            })
+                Log.i(TAG, "本地预览已绑定 (${localRenderer.width}x${localRenderer.height})")
+                return true
+            }
+
+            localRenderer.requestLayout()
+            if (doBind()) return@runOnMainThread
+
+            var attempts = 0
+            val retry = object : Runnable {
+                override fun run() {
+                    if (bound || localVideoTrack !== videoTrack) return
+                    if (doBind()) return
+                    attempts++
+                    if (attempts < 20) {
+                        mainHandler.postDelayed(this, 200)
+                    } else {
+                        Log.w(TAG, "本地预览轮询超时，等待 layout 回调")
+                    }
+                }
+            }
+            mainHandler.postDelayed(retry, 100)
+
+            layoutListener = object : ViewTreeObserver.OnGlobalLayoutListener {
+                override fun onGlobalLayout() {
+                    if (doBind()) return
+                }
+            }
+            localRenderer.viewTreeObserver.addOnGlobalLayoutListener(layoutListener)
         }
     }
 
@@ -344,6 +363,7 @@ class WebRTCManager(
                         segmentationProcessor = processor
                         segmentationPending = false
                         Log.i(TAG, "MediaPipe 抠图已挂载")
+                        refreshLocalPreview()
                     } catch (e: Exception) {
                         processor.release()
                         segmentationPending = false
@@ -399,6 +419,7 @@ class WebRTCManager(
                 if (publisherId != localDeviceId || subscriberId == localDeviceId) return
                 Log.i(TAG, "收到 subscribe: $subscriberId")
                 notePeerJoined(subscriberId)
+                pendingOfferRetries.remove(peerKey(subscriberId))?.let { mainHandler.removeCallbacks(it) }
                 if (!isPublishing) {
                     pendingSubscribers.add(subscriberId)
                     Log.w(TAG, "收到 subscribe 但尚未推流，已排队: $subscriberId")
@@ -567,54 +588,66 @@ class WebRTCManager(
         }
     }
 
+    private fun resetPublisherPeerConnection(remoteId: String) {
+        val key = peerKey(remoteId)
+        pendingOfferRetries.remove(key)?.let { mainHandler.removeCallbacks(it) }
+        makingOffer.remove(key)
+        pendingIce.remove(key)
+        peerConnections.remove(key)?.close()
+    }
+
+    private fun isCastConnected(pc: PeerConnection): Boolean {
+        val iceOk = pc.iceConnectionState() == PeerConnection.IceConnectionState.CONNECTED ||
+            pc.iceConnectionState() == PeerConnection.IceConnectionState.COMPLETED
+        return pc.connectionState() == PeerConnection.PeerConnectionState.CONNECTED &&
+            iceOk &&
+            pc.signalingState() == PeerConnection.SignalingState.STABLE
+    }
+
     private fun offerStreamToPeer(remoteId: String) {
         if (!isPublishing || remoteId == localDeviceId) return
         val key = peerKey(remoteId)
+
         peerConnections[key]?.let { existing ->
-            if (existing.connectionState() == PeerConnection.PeerConnectionState.CONNECTED) {
-                Log.i(TAG, "已与 $remoteId 连接，跳过重复 offer")
+            if (isCastConnected(existing)) {
+                Log.i(TAG, "已与 $remoteId 连接，跳过 offer")
                 pendingSubscribers.remove(remoteId)
                 return
             }
+            // 关键：已有 offer 在等 answer 时不能重置 PC，否则电脑 answer 永远到不了
             if (existing.signalingState() == PeerConnection.SignalingState.HAVE_LOCAL_OFFER) {
-                Log.i(TAG, "等待 $remoteId 的 answer，跳过重复 offer")
+                Log.i(TAG, "offer 已发出，等待 $remoteId answer")
                 return
             }
         }
+
+        if (makingOffer.contains(key)) return
+        if (localVideoTrack == null) {
+            Log.e(TAG, "本地视频轨道为空，无法发送 offer")
+            return
+        }
+
         try {
             ensureReceiveReady()
-            if (makingOffer.contains(key)) {
-                pendingOfferRetries[key]?.let { mainHandler.removeCallbacks(it) }
-                val retry = Runnable { offerStreamToPeer(remoteId) }
-                pendingOfferRetries[key] = retry
-                mainHandler.postDelayed(retry, 400)
-                return
-            }
-            if (localVideoTrack == null) {
-                Log.e(TAG, "本地视频轨道为空，无法发送 offer")
-                return
-            }
             val pc = preparePublisherPeerConnection(remoteId)
             attachLocalTracks(pc)
             logTransceivers(pc, "createOffer 前")
             Log.i(TAG, "准备向 $remoteId 发送 offer")
             makingOffer.add(key)
 
-            val offerConstraints = sendOnlyMediaConstraints()
-
             pc.createOffer(object : SdpObserver {
                 override fun onCreateSuccess(offer: SessionDescription?) {
                     offer ?: return
-                    Log.i(TAG, "offer 创建成功，SDP 长度: ${offer.description.length}")
                     logVideoMLineDirection(offer.description)
                     pc.setLocalDescription(object : SdpObserver {
                         override fun onCreateSuccess(desc: SessionDescription?) {}
                         override fun onSetSuccess() {
                             makingOffer.remove(key)
                             pendingSubscribers.remove(remoteId)
-                            Log.i(TAG, "setLocalDescription 成功，准备发送 offer 给 $remoteId")
+                            pendingOfferRetries.remove(key)?.let { mainHandler.removeCallbacks(it) }
                             sendSdp("offer", offer, remoteId)
                             Log.i(TAG, "offer 已发送: $remoteId")
+                            scheduleOfferRetryIfNoAnswer(remoteId)
                         }
                         override fun onCreateFailure(error: String?) {
                             makingOffer.remove(key)
@@ -634,11 +667,28 @@ class WebRTCManager(
                 override fun onSetFailure(error: String?) {
                     makingOffer.remove(key)
                 }
-            }, offerConstraints)
+            }, sendOnlyMediaConstraints())
         } catch (e: Exception) {
             makingOffer.remove(key)
             Log.e(TAG, "offerStreamToPeer 失败: $remoteId", e)
         }
+    }
+
+    /** 5 秒内无 answer 才重置并重发（仅一次） */
+    private fun scheduleOfferRetryIfNoAnswer(remoteId: String) {
+        val key = peerKey(remoteId)
+        pendingOfferRetries.remove(key)?.let { mainHandler.removeCallbacks(it) }
+        val retry = Runnable {
+            val pc = peerConnections[key] ?: return@Runnable
+            if (isCastConnected(pc)) return@Runnable
+            if (pc.signalingState() == PeerConnection.SignalingState.HAVE_LOCAL_OFFER) {
+                Log.w(TAG, "answer 超时，重置并重发 offer: $remoteId")
+                resetPublisherPeerConnection(remoteId)
+                offerStreamToPeer(remoteId)
+            }
+        }
+        pendingOfferRetries[key] = retry
+        mainHandler.postDelayed(retry, 5000)
     }
 
     fun renegotiateAllPeers() {
@@ -653,7 +703,7 @@ class WebRTCManager(
     }
 
     /** 推流开始后向排队/已知订阅方发送 offer */
-    private fun flushPendingOffers() {
+    fun flushPendingOffers() {
         if (!isPublishing) return
         val targets = (pendingSubscribers + knownPeerIds)
             .filter { it != localDeviceId }
@@ -663,8 +713,8 @@ class WebRTCManager(
             return
         }
         Log.i(TAG, "向 ${targets.size} 个设备推送 offer: $targets")
-        targets.forEachIndexed { index, remoteId ->
-            mainHandler.postDelayed({ offerStreamToPeer(remoteId) }, index * 200L + 800L)
+        targets.forEach { remoteId ->
+            offerStreamToPeer(remoteId)
         }
     }
 
@@ -773,8 +823,9 @@ class WebRTCManager(
                     PeerConnection.IceConnectionState.CONNECTED ->
                         Log.i(TAG, "ICE 连接已建立: $remoteId")
                     PeerConnection.IceConnectionState.FAILED -> {
-                        Log.e(TAG, "ICE 连接失败: $remoteId，1.5s 后重试 offer")
+                        Log.e(TAG, "ICE 连接失败: $remoteId")
                         if (isPublishing) {
+                            resetPublisherPeerConnection(remoteId)
                             mainHandler.postDelayed({ offerStreamToPeer(remoteId) }, 1500)
                         }
                     }
@@ -881,6 +932,7 @@ class WebRTCManager(
             override fun onCreateSuccess(desc: SessionDescription?) {}
             override fun onSetSuccess() {
                 makingOffer.remove(key)
+                pendingOfferRetries.remove(key)?.let { mainHandler.removeCallbacks(it) }
                 drainPendingIce(from)
                 Log.i(TAG, "answer 已应用: $from")
             }

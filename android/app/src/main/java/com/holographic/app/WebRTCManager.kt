@@ -216,6 +216,11 @@ class WebRTCManager(
         return result
     }
 
+    private fun sendOnlyMediaConstraints() = MediaConstraints().apply {
+        mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", "false"))
+        mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "false"))
+    }
+
     private fun startPublishingInternal(enableSegmentation: Boolean): Boolean {
         if (isPublishing) return true
         return try {
@@ -247,8 +252,11 @@ class WebRTCManager(
             val videoTrack = peerFactory.createVideoTrack("video0", source)
             localVideoTrack = videoTrack
             videoTrack.setEnabled(true)
-            videoTrack.addSink(localRenderer)
-            localRenderer.post { localRenderer.requestLayout() }
+            localRenderer.post {
+                videoTrack.addSink(localRenderer)
+                localRenderer.requestLayout()
+                Log.i(TAG, "本地预览 addSink 完成")
+            }
 
             val audioConstraints = MediaConstraints()
             val aSource = peerFactory.createAudioSource(audioConstraints)
@@ -511,23 +519,21 @@ class WebRTCManager(
                 return
             }
             val pc = preparePublisherPeerConnection(remoteId)
-            attachLocalTracks(pc)
             Log.i(TAG, "准备向 $remoteId 发送 offer")
             makingOffer.add(key)
 
-            val offerConstraints = MediaConstraints().apply {
-                mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", "false"))
-                mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "false"))
-            }
+            val offerConstraints = sendOnlyMediaConstraints()
 
             pc.createOffer(object : SdpObserver {
                 override fun onCreateSuccess(offer: SessionDescription?) {
                     offer ?: return
+                    Log.i(TAG, "offer 创建成功，SDP 长度: ${offer.description.length}")
                     pc.setLocalDescription(object : SdpObserver {
                         override fun onCreateSuccess(desc: SessionDescription?) {}
                         override fun onSetSuccess() {
                             makingOffer.remove(key)
                             pendingSubscribers.remove(remoteId)
+                            Log.i(TAG, "setLocalDescription 成功，准备发送 offer 给 $remoteId")
                             sendSdp("offer", offer, remoteId)
                             Log.i(TAG, "offer 已发送: $remoteId")
                         }
@@ -718,7 +724,7 @@ class WebRTCManager(
                             Log.e(TAG, "createAnswer 失败: $error")
                         }
                         override fun onSetFailure(error: String?) {}
-                    }, MediaConstraints())
+                    }, sendOnlyMediaConstraints())
                 }
                 override fun onCreateFailure(error: String?) {}
                 override fun onSetFailure(error: String?) {

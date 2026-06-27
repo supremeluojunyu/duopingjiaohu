@@ -399,6 +399,7 @@ export class WebRTCManager {
         this.peers.set(key, pc);
 
         const sdp = msg.payload.sdp as RTCSessionDescriptionInit;
+        console.log('[WebRTC] 收到 offer:', msg.from, 'SDP 长度:', sdp.sdp?.length);
 
         const offerCollision = this.makingOffer.has(key) || pc.signalingState !== 'stable';
         if (offerCollision) {
@@ -420,6 +421,16 @@ export class WebRTCManager {
           return;
         }
 
+        console.log('[WebRTC] setRemoteDescription 成功，transceivers:', pc.getTransceivers().length);
+
+        for (const t of pc.getTransceivers()) {
+          if (t.receiver.track?.kind === 'video') {
+            if (t.direction !== 'recvonly' && t.direction !== 'sendrecv') {
+              t.direction = 'recvonly';
+            }
+          }
+        }
+
         const pending = this.pendingCandidates.get(key) ?? [];
         for (const c of pending) {
           await pc.addIceCandidate(new RTCIceCandidate(c));
@@ -427,9 +438,14 @@ export class WebRTCManager {
         this.pendingCandidates.delete(key);
         this.makingOffer.delete(key);
 
-        const answer = await pc.createAnswer();
+        const answer = await pc.createAnswer({
+          offerToReceiveAudio: false,
+          offerToReceiveVideo: true,
+        });
+        console.log('[WebRTC] createAnswer 成功，answer SDP 长度:', answer.sdp?.length);
         await pc.setLocalDescription(answer);
 
+        console.log('[WebRTC] 发送 answer 给', msg.from);
         console.info('[WebRTC] answer sent to', msg.from, 'senders', pc.getSenders().length);
 
         this.signaling.send({

@@ -141,6 +141,9 @@ jobs:
             ~/.gradle/wrapper
           key: gradle-${{ runner.os }}-${{ hashFiles('android/**/*.gradle*', 'android/**/gradle-wrapper.properties') }}
           restore-keys: gradle-${{ runner.os }}-
+      - name: Use official Gradle distribution (CI)
+        run: |
+          sed -i 's|https\\://mirrors.cloud.tencent.com/gradle/gradle-|https\\://services.gradle.org/distributions/gradle-|' android/gradle/wrapper/gradle-wrapper.properties
       - name: Build debug APK
         working-directory: android
         env:

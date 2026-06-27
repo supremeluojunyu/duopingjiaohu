@@ -1,10 +1,10 @@
 {
-  "versionName": "0.1.8.11",
-  "versionCode": 17,
-  "fileName": "holographic-0.1.8.11.apk",
+  "versionName": "0.1.8.12",
+  "versionCode": 18,
+  "fileName": "holographic-0.1.8.12.apk",
   "fileSize": 0,
   "sha256": "",
-  "updatedAt": "2026-06-09T12:00:00.000Z",
+  "updatedAt": "2026-06-09T14:00:00.000Z",
   "available": true,
-  "releaseNotes": "WebRTC 投屏修复：SDP 协商、ICE 增强、订阅流程对齐；管理员 X/Z 轴调节；CI 全平台成功才发布"
+  "releaseNotes": "CI 构建加固（Maven/Gradle 源、重试）；WebRTC 投屏与 ICE 修复"
 }

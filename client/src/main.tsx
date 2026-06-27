@@ -947,6 +947,7 @@ function App() {
 
 function bindVideoToStream(video: HTMLVideoElement, stream: MediaStream): () => void {
   video.srcObject = stream;
+  console.log('[WebRTC] GridVideo srcObject 已设置，readyState:', video.readyState);
   const play = () => {
     void video.play().catch((e) => {
       console.warn('[GridVideo] 视频播放失败:', e);

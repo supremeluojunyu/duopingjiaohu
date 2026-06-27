@@ -154,7 +154,7 @@ class SegmentationProcessor(private val context: Context) : VideoProcessor {
         mpImage.close()
         scaled.recycle()
 
-        if (!applyCategoryMask(fullBitmap, result, w, h)) {
+        if (!applyGreenBackground(fullBitmap, result, w, h)) {
             Log.d(TAG, "保留原始画面（未应用绿幕抠图）")
         }
 
@@ -165,8 +165,8 @@ class SegmentationProcessor(private val context: Context) : VideoProcessor {
         return VideoFrame(outI420, frame.rotation, frame.timestampNs)
     }
 
-    /** @return true 表示已应用绿幕抠图；false 表示保留原始 bitmap */
-    private fun applyCategoryMask(
+    /** 使用 Canvas + PorterDuff 合成绿幕背景，避免逐像素循环导致 OOM */
+    private fun applyGreenBackground(
         bitmap: Bitmap,
         result: ImageSegmenterResult,
         w: Int,

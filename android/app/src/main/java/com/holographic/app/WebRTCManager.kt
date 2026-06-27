@@ -221,6 +221,15 @@ class WebRTCManager(
         mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "false"))
     }
 
+    private fun logVideoMLineDirection(sdp: String) {
+        val videoLine = sdp.lineSequence().firstOrNull { it.startsWith("m=video") } ?: "none"
+        val directions = Regex("a=(sendrecv|sendonly|recvonly|inactive)")
+            .findAll(sdp)
+            .map { it.groupValues[1] }
+            .joinToString(",")
+        Log.i(TAG, "offer video m-line: $videoLine | directions: ${directions.ifEmpty { "unknown" }}")
+    }
+
     private fun startPublishingInternal(enableSegmentation: Boolean): Boolean {
         if (isPublishing) return true
         return try {
@@ -528,6 +537,7 @@ class WebRTCManager(
                 override fun onCreateSuccess(offer: SessionDescription?) {
                     offer ?: return
                     Log.i(TAG, "offer 创建成功，SDP 长度: ${offer.description.length}")
+                    logVideoMLineDirection(offer.description)
                     pc.setLocalDescription(object : SdpObserver {
                         override fun onCreateSuccess(desc: SessionDescription?) {}
                         override fun onSetSuccess() {

@@ -464,6 +464,18 @@ export class WebRTCManager {
             t.direction = 'recvonly';
           }
         }
+        pc.getTransceivers().forEach((t, i) => {
+          console.log(
+            '[WebRTC] transceiver',
+            i,
+            'mid:',
+            t.mid,
+            'direction:',
+            t.direction,
+            'track:',
+            t.receiver.track?.kind ?? 'pending'
+          );
+        });
 
         const pending = this.pendingCandidates.get(key) ?? [];
         for (const c of pending) {
@@ -472,6 +484,7 @@ export class WebRTCManager {
         this.pendingCandidates.delete(key);
         this.makingOffer.delete(key);
 
+        console.log('[WebRTC] 准备 createAnswer，signalingState:', pc.signalingState);
         const answer = await pc.createAnswer();
         console.log('[WebRTC] createAnswer 成功，answer SDP 长度:', answer.sdp?.length);
         await pc.setLocalDescription(answer);

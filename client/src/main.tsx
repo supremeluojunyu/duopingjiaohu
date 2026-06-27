@@ -332,6 +332,10 @@ function App() {
             createDefaultMapping(d.id, 'camera', visibleCount, visibleCount + 1),
           ];
         });
+        // 手机加入房间后提前 subscribe，投屏开始时 Android 即可向本端发送 offer
+        if (d.type === 'mobile' && d.id !== localDeviceIdRef.current) {
+          webrtcRef.current?.noteAwaitingPublisher(d.id, 'camera');
+        }
         break;
       }
       case 'peer_left': {

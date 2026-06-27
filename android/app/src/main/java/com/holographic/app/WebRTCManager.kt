@@ -203,6 +203,28 @@ class WebRTCManager(
         }
     }
 
+    /** Surface 从 GONE 恢复可见后需重新绑定，否则预览可能黑屏 */
+    fun refreshLocalPreview() {
+        val track = localVideoTrack ?: return
+        runOnMainThread {
+            initLocalRendererOnMainThread()
+            track.removeSink(localRenderer)
+            track.addSink(localRenderer)
+            localRenderer.requestLayout()
+            Log.i(TAG, "本地预览已刷新 (${localRenderer.width}x${localRenderer.height})")
+        }
+    }
+
+    private fun bindLocalPreview(videoTrack: VideoTrack) {
+        runOnMainThread {
+            initLocalRendererOnMainThread()
+            videoTrack.removeSink(localRenderer)
+            videoTrack.addSink(localRenderer)
+            localRenderer.requestLayout()
+            Log.i(TAG, "本地预览 addSink 完成 (${localRenderer.width}x${localRenderer.height})")
+        }
+    }
+
     fun startPublishing(enableSegmentation: Boolean, callback: (Boolean) -> Unit) {
         if (isPublishing) {
             callback(true)
@@ -231,7 +253,6 @@ class WebRTCManager(
     private fun sendOnlyMediaConstraints() = MediaConstraints().apply {
         mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", "false"))
         mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "false"))
-        optional.add(MediaConstraints.KeyValuePair("googCodec", "VP8"))
     }
 
     private fun logTransceivers(pc: PeerConnection, label: String) {
@@ -240,26 +261,6 @@ class WebRTCManager(
                 "sender=${t.sender.track()?.kind() ?: "none"} recv=${t.receiver.track()?.kind() ?: "none"}"
         }
         Log.i(TAG, "$label transceivers(${pc.transceivers.size}): ${lines.joinToString("; ")}")
-    }
-
-    private fun preferVp8Codec(pc: PeerConnection) {
-        val peerFactory = factory ?: return
-        try {
-            val caps = peerFactory.getRtpSenderCapabilities(MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO)
-            val vp8 = caps.codecs.filter { it.name.equals("VP8", ignoreCase = true) }
-            if (vp8.isEmpty()) {
-                Log.w(TAG, "设备不支持 VP8，使用默认编码")
-                return
-            }
-            for (t in pc.transceivers) {
-                if (t.mediaType == MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO) {
-                    t.setCodecPreferences(vp8)
-                    Log.i(TAG, "已设置 VP8 编码偏好")
-                }
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "设置 VP8 偏好失败: ${e.message}")
-        }
     }
 
     private fun logVideoMLineDirection(sdp: String) {
@@ -302,11 +303,7 @@ class WebRTCManager(
             val videoTrack = peerFactory.createVideoTrack("video0", source)
             localVideoTrack = videoTrack
             videoTrack.setEnabled(true)
-            localRenderer.post {
-                videoTrack.addSink(localRenderer)
-                localRenderer.requestLayout()
-                Log.i(TAG, "本地预览 addSink 完成")
-            }
+            bindLocalPreview(videoTrack)
 
             val audioConstraints = MediaConstraints()
             val aSource = peerFactory.createAudioSource(audioConstraints)
@@ -315,7 +312,7 @@ class WebRTCManager(
 
             isPublishing = true
             Log.i(TAG, "推流已开始，本地预览已绑定")
-            renegotiateAllPeers()
+            flushPendingOffers()
             true
         } catch (e: Exception) {
             Log.e(TAG, "startPublishing 失败", e)
@@ -334,6 +331,7 @@ class WebRTCManager(
                 segmentationProcessor = processor
                 segmentationPending = false
                 Log.i(TAG, "MediaPipe 抠图已延迟挂载")
+                refreshLocalPreview()
             } catch (e: Exception) {
                 Log.e(TAG, "MediaPipe 挂载失败，继续普通推流", e)
                 segmentationPending = false
@@ -384,6 +382,7 @@ class WebRTCManager(
                 val publisherId = msg.payload?.get("publisherId")?.asString ?: return
                 val subscriberId = msg.payload?.get("subscriberId")?.asString ?: return
                 if (publisherId != localDeviceId || subscriberId == localDeviceId) return
+                Log.i(TAG, "收到 subscribe: $subscriberId")
                 notePeerJoined(subscriberId)
                 if (!isPublishing) {
                     pendingSubscribers.add(subscriberId)
@@ -556,6 +555,21 @@ class WebRTCManager(
     private fun offerStreamToPeer(remoteId: String) {
         if (!isPublishing || remoteId == localDeviceId) return
         val key = peerKey(remoteId)
+        peerConnections[key]?.let { existing ->
+            when (existing.connectionState()) {
+                PeerConnection.PeerConnectionState.CONNECTED,
+                PeerConnection.PeerConnectionState.CONNECTING -> {
+                    Log.i(TAG, "已与 $remoteId 连接中，跳过重复 offer")
+                    pendingSubscribers.remove(remoteId)
+                    return
+                }
+                else -> {}
+            }
+            if (existing.signalingState() == PeerConnection.SignalingState.HAVE_LOCAL_OFFER) {
+                Log.i(TAG, "等待 $remoteId 的 answer，跳过重复 offer")
+                return
+            }
+        }
         try {
             ensureReceiveReady()
             if (makingOffer.contains(key)) {
@@ -572,7 +586,6 @@ class WebRTCManager(
             val pc = preparePublisherPeerConnection(remoteId)
             attachLocalTracks(pc)
             logTransceivers(pc, "createOffer 前")
-            preferVp8Codec(pc)
             Log.i(TAG, "准备向 $remoteId 发送 offer")
             makingOffer.add(key)
 
@@ -625,6 +638,22 @@ class WebRTCManager(
         Log.i(TAG, "向 ${targets.size} 个设备重协商: $targets")
         targets.forEachIndexed { index, remoteId ->
             mainHandler.postDelayed({ offerStreamToPeer(remoteId) }, (index * 200L + 300L))
+        }
+    }
+
+    /** 推流开始后向排队/已知订阅方发送 offer */
+    private fun flushPendingOffers() {
+        if (!isPublishing) return
+        val targets = (pendingSubscribers + knownPeerIds)
+            .filter { it != localDeviceId }
+            .distinct()
+        if (targets.isEmpty()) {
+            Log.i(TAG, "暂无待推送设备，等待 subscribe")
+            return
+        }
+        Log.i(TAG, "向 ${targets.size} 个设备推送 offer: $targets")
+        targets.forEachIndexed { index, remoteId ->
+            mainHandler.postDelayed({ offerStreamToPeer(remoteId) }, index * 150L + 200L)
         }
     }
 

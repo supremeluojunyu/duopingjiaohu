@@ -152,15 +152,25 @@ export class WebRTCManager {
     if (publisherId === this.localDeviceId) return;
     const key = `${publisherId}:${streamType}`;
     const pc = this.peers.get(key);
-    if (
-      pc &&
-      (pc.connectionState === 'failed' ||
+    if (pc) {
+      if (
+        pc.connectionState === 'connected' ||
+        pc.connectionState === 'connecting' ||
+        pc.signalingState === 'have-remote-offer'
+      ) {
+        console.log('[WebRTC] 已在订阅/连接中，跳过重复 subscribe:', publisherId);
+        return;
+      }
+      if (
+        pc.connectionState === 'failed' ||
         pc.connectionState === 'closed' ||
-        pc.connectionState === 'disconnected')
-    ) {
-      pc.close();
-      this.peers.delete(key);
-      this.remoteStreams.delete(key);
+        pc.connectionState === 'disconnected'
+      ) {
+        pc.close();
+        this.peers.delete(key);
+        this.remoteStreams.delete(key);
+        this.stopStatsMonitor(key);
+      }
     }
     const ok = this.signaling.send({
       type: 'subscribe',
@@ -173,6 +183,8 @@ export class WebRTCManager {
     });
     if (!ok) {
       console.warn('[WebRTC] subscribe 发送失败，等待发布端:', publisherId);
+    } else {
+      console.log('[WebRTC] subscribe 发送成功:', publisherId);
     }
   }
 
@@ -331,31 +343,6 @@ export class WebRTCManager {
     this.noteAwaitingPublisher(remoteId, streamType);
   }
 
-  private async restartIce(remoteId: string, streamType: StreamType): Promise<void> {
-    const key = `${remoteId}:${streamType}`;
-    const pc = this.peers.get(key);
-    if (!pc) {
-      await this.retrySubscribe(remoteId, streamType);
-      return;
-    }
-    if (this.localStream) {
-      try {
-        const offer = await pc.createOffer({ iceRestart: true });
-        await pc.setLocalDescription(offer);
-        this.signaling.send({
-          type: 'offer',
-          to: remoteId,
-          payload: { sdp: offer, streamType, targetId: remoteId },
-        });
-        console.info('[WebRTC] ICE 重启 offer 已发送:', remoteId);
-        return;
-      } catch (err) {
-        console.error('[WebRTC] ICE 重启失败:', remoteId, err);
-      }
-    }
-    await this.retrySubscribe(remoteId, streamType);
-  }
-
   private waitForSignalingStable(pc: RTCPeerConnection, timeoutMs = 5000): Promise<void> {
     if (pc.signalingState === 'stable') return Promise.resolve();
 
@@ -502,7 +489,9 @@ export class WebRTCManager {
       }
       if (pc.iceConnectionState === 'failed') {
         console.error('[WebRTC] ICE 连接失败，尝试重连:', remoteId);
-        void this.restartIce(remoteId, streamType);
+        if (pc.connectionState !== 'connected') {
+          void this.retrySubscribe(remoteId, streamType);
+        }
       }
       if (pc.iceConnectionState === 'disconnected') {
         console.warn('[WebRTC] ICE 断开:', remoteId);
@@ -529,49 +518,54 @@ export class WebRTCManager {
         if (!msg.from) return;
         const key = `${msg.from}:${streamType}`;
 
-        // 作为订阅方应答：不在 setRemoteDescription 之前预建 recv transceiver，避免 m-line 错位
         let pc = this.peers.get(key);
-        if (pc) {
-          pc.close();
+        const needsNewPc =
+          !pc ||
+          pc.connectionState === 'closed' ||
+          pc.connectionState === 'failed' ||
+          pc.signalingState === 'closed';
+        if (needsNewPc) {
+          pc?.close();
           this.peers.delete(key);
           this.remoteStreams.delete(key);
+          pc = this.createPeerConnection(msg.from, streamType);
+          this.peers.set(key, pc);
         }
-        pc = this.createPeerConnection(msg.from, streamType);
-        this.peers.set(key, pc);
+        if (!pc) return;
+        const conn = pc;
 
         const sdp = msg.payload.sdp as RTCSessionDescriptionInit;
-        console.log('[WebRTC] 收到 offer:', msg.from, 'SDP 长度:', sdp.sdp?.length);
+        console.log('[WebRTC] 收到 offer:', msg.from, 'SDP 长度:', sdp.sdp?.length, 'reusePc:', !needsNewPc);
 
-        const offerCollision = this.makingOffer.has(key) || pc.signalingState !== 'stable';
+        const offerCollision = this.makingOffer.has(key) || conn.signalingState !== 'stable';
         if (offerCollision) {
           let rollbackFailed = false;
           try {
-            await pc.setLocalDescription({ type: 'rollback' } as RTCSessionDescriptionInit);
+            await conn.setLocalDescription({ type: 'rollback' } as RTCSessionDescriptionInit);
           } catch {
             rollbackFailed = true;
           }
-          if (rollbackFailed || pc.signalingState !== 'stable') {
-            await this.waitForSignalingStable(pc);
+          if (rollbackFailed || conn.signalingState !== 'stable') {
+            await this.waitForSignalingStable(conn);
           }
         }
 
         try {
-          await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+          await conn.setRemoteDescription(new RTCSessionDescription(sdp));
         } catch (err) {
           console.error('[WebRTC] setRemoteDescription(offer) failed', err);
           return;
         }
 
-        console.log('[WebRTC] setRemoteDescription 成功，transceivers:', pc.getTransceivers().length);
+        console.log('[WebRTC] setRemoteDescription 成功，transceivers:', conn.getTransceivers().length);
 
-        for (const t of pc.getTransceivers()) {
-          const kind = t.receiver.track?.kind ?? t.sender.track?.kind;
-          if (kind !== 'video') continue;
-          if (t.direction !== 'recvonly') {
+        for (const t of conn.getTransceivers()) {
+          if (t.receiver.track?.kind !== 'video' && t.sender.track?.kind !== 'video') continue;
+          if (t.direction !== 'recvonly' && t.direction !== 'sendrecv') {
             t.direction = 'recvonly';
           }
         }
-        pc.getTransceivers().forEach((t, i) => {
+        conn.getTransceivers().forEach((t, i) => {
           console.log(
             '[WebRTC] transceiver',
             i,
@@ -586,18 +580,18 @@ export class WebRTCManager {
 
         const pending = this.pendingCandidates.get(key) ?? [];
         for (const c of pending) {
-          await pc.addIceCandidate(new RTCIceCandidate(c));
+          await conn.addIceCandidate(new RTCIceCandidate(c));
         }
         this.pendingCandidates.delete(key);
         this.makingOffer.delete(key);
 
-        console.log('[WebRTC] 准备 createAnswer，signalingState:', pc.signalingState);
-        const answer = await pc.createAnswer();
+        console.log('[WebRTC] 准备 createAnswer，signalingState:', conn.signalingState);
+        const answer = await conn.createAnswer();
         console.log('[WebRTC] createAnswer 成功，answer SDP 长度:', answer.sdp?.length);
-        await pc.setLocalDescription(answer);
+        await conn.setLocalDescription(answer);
 
         console.log('[WebRTC] 发送 answer 给', msg.from);
-        console.info('[WebRTC] answer sent to', msg.from, 'senders', pc.getSenders().length);
+        console.info('[WebRTC] answer sent to', msg.from, 'senders', conn.getSenders().length);
 
         this.signaling.send({
           type: 'answer',

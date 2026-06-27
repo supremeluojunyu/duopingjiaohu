@@ -300,27 +300,31 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                         binding.tvEmptyHint.visibility = View.GONE
                         binding.remotePreview.visibility = View.GONE
                         binding.localPreview.bringToFront()
-                        manager.startPublishing(segmentationEnabled) { ok ->
-                            if (!ok) {
-                                binding.localPreview.visibility = View.GONE
-                                binding.tvEmptyHint.visibility = View.VISIBLE
-                                Toast.makeText(this, "无法打开摄像头，请检查权限", Toast.LENGTH_LONG).show()
-                                return@startPublishing
-                            }
-                            isPublishing = true
-                            binding.btnStartCast.text = "停止投屏"
-                            if (!notifyPublishStarted()) {
-                                Toast.makeText(
-                                    this,
-                                    "信令已断开，投屏状态可能未同步",
-                                    Toast.LENGTH_LONG
-                                ).show()
-                            }
-                            binding.localPreview.postDelayed({
-                                manager.renegotiateAllPeers()
-                            }, 800)
-                            rotationSensor?.let {
-                                sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
+                        binding.localPreview.requestLayout()
+                        manager.ensureLocalPreviewReady()
+                        binding.localPreview.post {
+                            manager.startPublishing(segmentationEnabled) { ok ->
+                                if (!ok) {
+                                    binding.localPreview.visibility = View.GONE
+                                    binding.tvEmptyHint.visibility = View.VISIBLE
+                                    Toast.makeText(this, "无法打开摄像头，请检查权限", Toast.LENGTH_LONG).show()
+                                    return@startPublishing
+                                }
+                                isPublishing = true
+                                binding.btnStartCast.text = "停止投屏"
+                                binding.localPreview.postDelayed({
+                                    manager.refreshLocalPreview()
+                                }, 150)
+                                if (!notifyPublishStarted()) {
+                                    Toast.makeText(
+                                        this,
+                                        "信令已断开，投屏状态可能未同步",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                }
+                                rotationSensor?.let {
+                                    sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
+                                }
                             }
                         }
                     }

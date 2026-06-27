@@ -213,17 +213,12 @@ class WebRTCManager(
             if (enableSegmentation) {
                 try {
                     val processor = SegmentationProcessor(context)
-                    if (processor.isReady()) {
-                        processor.setEnabled(true)
-                        segmentationProcessor = processor
-                        source.setVideoProcessor(processor)
-                        Log.i(TAG, "MediaPipe 人像抠图已启用")
-                    } else {
-                        processor.release()
-                        Log.w(TAG, "MediaPipe 未就绪，回退普通推流")
-                    }
+                    processor.setEnabled(true)
+                    segmentationProcessor = processor
+                    source.setVideoProcessor(processor)
+                    Log.i(TAG, "MediaPipe 人像抠图已启用（首帧懒加载）")
                 } catch (e: Exception) {
-                    Log.e(TAG, "MediaPipe 初始化失败，回退普通推流", e)
+                    Log.e(TAG, "MediaPipe 挂载失败，回退普通推流", e)
                     segmentationProcessor = null
                 }
             }
@@ -232,7 +227,12 @@ class WebRTCManager(
             localVideoTrack = videoTrack
             videoTrack.setEnabled(true)
             videoTrack.addSink(localRenderer)
-            localRenderer.post { localRenderer.requestLayout() }
+            localRenderer.post {
+                localRenderer.requestLayout()
+                // Surface 完成 layout 后重新绑定，避免黑屏
+                localVideoTrack?.removeSink(localRenderer)
+                localVideoTrack?.addSink(localRenderer)
+            }
             Log.i(TAG, "本地预览已绑定 videoTrack")
 
             val audioConstraints = MediaConstraints()
@@ -539,7 +539,7 @@ class WebRTCManager(
                 Log.e(TAG, "本地视频轨道为空，无法发送 offer")
                 return
             }
-            val pc = getOrCreatePeerConnection(remoteId)
+            val pc = preparePublisherPeerConnection(remoteId)
             attachLocalTracks(pc)
             Log.i(TAG, "准备向 $remoteId 发送 offer")
             makingOffer.add(key)
@@ -595,10 +595,37 @@ class WebRTCManager(
                 .filter { it != localDeviceId }
                 .distinct()
             Log.i(TAG, "向 ${targets.size} 个设备重协商推流: $targets")
-            targets.forEach { offerStreamToPeer(it) }
+            targets.forEach { remoteId ->
+                mainHandler.postDelayed({ offerStreamToPeer(remoteId) }, 350)
+            }
         } catch (e: Exception) {
             Log.e(TAG, "重协商推流失败", e)
         }
+    }
+
+    private fun preparePublisherPeerConnection(remoteId: String): PeerConnection {
+        val key = peerKey(remoteId)
+        peerConnections[key]?.let { existing ->
+            val deadConnection = when (existing.connectionState()) {
+                PeerConnection.PeerConnectionState.FAILED,
+                PeerConnection.PeerConnectionState.CLOSED,
+                PeerConnection.PeerConnectionState.DISCONNECTED -> true
+                else -> false
+            }
+            val stuckSignaling = existing.signalingState() != PeerConnection.SignalingState.STABLE &&
+                existing.signalingState() != PeerConnection.SignalingState.HAVE_LOCAL_OFFER
+            val missingVideo = isPublishing && existing.senders.none {
+                it.track()?.kind() == "video" && it.track()?.enabled() == true
+            }
+            if (deadConnection || stuckSignaling || missingVideo) {
+                Log.w(TAG, "重置发布端 PeerConnection: $remoteId")
+                existing.close()
+                peerConnections.remove(key)
+                pendingIce.remove(key)
+                makingOffer.remove(key)
+            }
+        }
+        return getOrCreatePeerConnection(remoteId)
     }
 
     private fun getOrCreatePeerConnection(remoteId: String): PeerConnection {

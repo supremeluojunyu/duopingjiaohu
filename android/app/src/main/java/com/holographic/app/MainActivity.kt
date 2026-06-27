@@ -322,7 +322,10 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                                             Toast.LENGTH_LONG
                                         ).show()
                                     }
-                                    manager.renegotiateAllPeers()
+                                    // 等待摄像头首帧后再协商，避免空 track offer
+                                    binding.localPreview.postDelayed({
+                                        manager.renegotiateAllPeers()
+                                    }, 500)
                                     rotationSensor?.let {
                                         sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
                                     }

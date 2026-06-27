@@ -298,7 +298,10 @@ export class WebRTCManager {
   }
 
   private createPeerConnection(remoteId: string, streamType: StreamType): RTCPeerConnection {
-    const pc = new RTCPeerConnection({ iceServers: this.iceServers });
+    const pc = new RTCPeerConnection({
+      iceServers: this.iceServers.length > 0 ? this.iceServers : getCachedIceServers(),
+      iceCandidatePoolSize: 4,
+    });
     const key = `${remoteId}:${streamType}`;
 
     pc.onicecandidate = (event) => {
@@ -326,12 +329,17 @@ export class WebRTCManager {
     };
 
     pc.onconnectionstatechange = () => {
+      console.info('[WebRTC] connectionState', remoteId, pc.connectionState, 'ice', pc.iceConnectionState);
       if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
         this.peers.delete(key);
         this.remoteStreams.delete(key);
         this.notifyStreams();
         this.onPeerFailed?.(remoteId, streamType);
       }
+    };
+
+    pc.oniceconnectionstatechange = () => {
+      console.info('[WebRTC] iceConnectionState', remoteId, pc.iceConnectionState);
     };
 
     return pc;
@@ -395,6 +403,8 @@ export class WebRTCManager {
 
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
+
+        console.info('[WebRTC] answer sent to', msg.from, 'senders', pc.getSenders().length);
 
         this.signaling.send({
           type: 'answer',

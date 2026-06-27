@@ -289,8 +289,15 @@ function App() {
             },
           });
           const webrtc = new WebRTCManager(signalingRef.current, dev.id);
-          if (pendingIceRef.current) {
+          if (pendingIceRef.current?.length) {
             webrtc.setIceServers(pendingIceRef.current);
+          } else {
+            void fetchIceServers(
+              joinForm.serverUrl.trim() || DEFAULT_SERVER
+            ).then((servers) => {
+              pendingIceRef.current = servers;
+              webrtcRef.current?.setIceServers(servers);
+            });
           }
           webrtc.setRemoteStreamCallback(setRemoteStreams);
           webrtc.setPeerFailedCallback((publisherId) => {
@@ -497,12 +504,11 @@ function App() {
       };
       signaling.setJoinPayload(joinPayload);
 
-      await signaling.connect();
-      signalingRef.current = signaling;
-
       const iceServers = await fetchIceServers(serverUrl);
       pendingIceRef.current = iceServers;
-      // join 由 connect() 的 onopen + lastJoinPayload 自动发送，避免重复 join 产生双设备
+      await signaling.connect();
+      signalingRef.current = signaling;
+      webrtcRef.current?.setIceServers(iceServers);
     } catch (err) {
       signalingRef.current?.disconnect();
       signalingRef.current = null;

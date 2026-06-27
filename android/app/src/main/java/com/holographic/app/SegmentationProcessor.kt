@@ -16,9 +16,11 @@ import com.google.mediapipe.tasks.vision.imagesegmenter.ImageSegmenter
 import com.google.mediapipe.tasks.vision.imagesegmenter.ImageSegmenterResult
 import org.webrtc.*
 import java.nio.ByteBuffer
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * WebRTC VideoProcessor — MediaPipe 实时人像分割
+ * MediaPipe VIDEO 模式必须在同一 capturer 线程调用，禁止跨线程初始化/推理。
  */
 class SegmentationProcessor(private val context: Context) : VideoProcessor {
 
@@ -41,37 +43,7 @@ class SegmentationProcessor(private val context: Context) : VideoProcessor {
     private var segmenter: ImageSegmenter? = null
     private var enabled = false
     private var lastProcessTimeMs = 0L
-
-    fun isReady(): Boolean {
-        if (segmenter == null) ensureSegmenter()
-        return segmenter != null
-    }
-
-    private fun ensureSegmenter() {
-        if (segmenter != null) return
-        initSegmenter()
-    }
-
-    private fun initSegmenter() {
-        try {
-            val options = ImageSegmenter.ImageSegmenterOptions.builder()
-                .setBaseOptions(
-                    BaseOptions.builder()
-                        .setModelAssetPath(MODEL)
-                        .setDelegate(Delegate.CPU)
-                        .build()
-                )
-                .setRunningMode(RunningMode.VIDEO)
-                .setOutputCategoryMask(true)
-                .setOutputConfidenceMasks(false)
-                .build()
-            segmenter = ImageSegmenter.createFromOptions(context, options)
-            Log.i(TAG, "MediaPipe ImageSegmenter 就绪 (VIDEO + CPU)")
-        } catch (e: Exception) {
-            Log.e(TAG, "MediaPipe 初始化失败: ${e.message}")
-            segmenter = null
-        }
-    }
+    private val initFailed = AtomicBoolean(false)
 
     fun setEnabled(value: Boolean) {
         enabled = value
@@ -81,7 +53,12 @@ class SegmentationProcessor(private val context: Context) : VideoProcessor {
         this.sink = sink
     }
 
-    override fun onCapturerStarted(success: Boolean) {}
+    override fun onCapturerStarted(success: Boolean) {
+        if (!success) {
+            Log.e(TAG, "摄像头采集启动失败，抠图处理器待机")
+        }
+    }
+
     override fun onCapturerStopped() {}
 
     override fun onFrameCaptured(frame: VideoFrame) {
@@ -91,13 +68,7 @@ class SegmentationProcessor(private val context: Context) : VideoProcessor {
             return
         }
 
-        if (!enabled) {
-            targetSink.onFrame(frame)
-            return
-        }
-
-        ensureSegmenter()
-        if (segmenter == null) {
+        if (!enabled || initFailed.get()) {
             targetSink.onFrame(frame)
             return
         }
@@ -112,16 +83,51 @@ class SegmentationProcessor(private val context: Context) : VideoProcessor {
         val frameToForward = frame
         var frameReleased = false
         try {
+            if (!ensureSegmenterOnCaptureThread()) {
+                targetSink.onFrame(frameToForward)
+                return
+            }
             val processed = processFrame(frameToForward)
             frameToForward.release()
             frameReleased = true
             targetSink.onFrame(processed)
             processed.release()
+        } catch (e: OutOfMemoryError) {
+            Log.e(TAG, "分割内存不足，已禁用抠图: ${e.message}")
+            initFailed.set(true)
+            releaseSegmenter()
+            if (!frameReleased) targetSink.onFrame(frameToForward)
         } catch (e: Exception) {
             Log.w(TAG, "分割失败: ${e.message}")
             if (!frameReleased) {
                 targetSink.onFrame(frameToForward)
             }
+        }
+    }
+
+    /** 仅在 capturer 线程懒加载 MediaPipe，避免 UI 线程初始化导致闪退 */
+    private fun ensureSegmenterOnCaptureThread(): Boolean {
+        if (segmenter != null) return true
+        if (initFailed.get()) return false
+        return try {
+            val options = ImageSegmenter.ImageSegmenterOptions.builder()
+                .setBaseOptions(
+                    BaseOptions.builder()
+                        .setModelAssetPath(MODEL)
+                        .setDelegate(Delegate.CPU)
+                        .build()
+                )
+                .setRunningMode(RunningMode.VIDEO)
+                .setOutputCategoryMask(true)
+                .setOutputConfidenceMasks(false)
+                .build()
+            segmenter = ImageSegmenter.createFromOptions(context, options)
+            Log.i(TAG, "MediaPipe ImageSegmenter 就绪 (capturer 线程)")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "MediaPipe 初始化失败: ${e.message}")
+            initFailed.set(true)
+            false
         }
     }
 
@@ -176,7 +182,6 @@ class SegmentationProcessor(private val context: Context) : VideoProcessor {
         bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
     }
 
-    /** 由 category mask 生成模糊后的 alpha 蒙版，边缘平滑过渡 */
     private fun buildBlurredMask(buffer: ByteBuffer, mw: Int, mh: Int): Bitmap? {
         if (maskBitmap == null || maskBitmap!!.width != mw || maskBitmap!!.height != mh) {
             maskBitmap?.recycle()
@@ -262,12 +267,21 @@ class SegmentationProcessor(private val context: Context) : VideoProcessor {
         }
     }
 
-    fun release() {
-        segmenter?.close()
+    private fun releaseSegmenter() {
+        try {
+            segmenter?.close()
+        } catch (e: Exception) {
+            Log.w(TAG, "关闭 segmenter 失败: ${e.message}")
+        }
         segmenter = null
+    }
+
+    fun release() {
+        releaseSegmenter()
         maskBitmap?.recycle()
         maskBitmap = null
         blurredMaskBitmap?.recycle()
         blurredMaskBitmap = null
+        initFailed.set(false)
     }
 }

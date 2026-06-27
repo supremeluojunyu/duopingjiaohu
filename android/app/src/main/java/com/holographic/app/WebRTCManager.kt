@@ -325,7 +325,6 @@ class WebRTCManager(
 
             isPublishing = true
             Log.i(TAG, "推流已开始，本地预览已绑定")
-            flushPendingOffers()
             true
         } catch (e: Exception) {
             Log.e(TAG, "startPublishing 失败", e)
@@ -408,7 +407,7 @@ class WebRTCManager(
                 val deviceId = msg.payload?.getAsJsonObject("device")?.get("id")?.asString ?: return
                 if (deviceId == localDeviceId) return
                 notePeerJoined(deviceId)
-                if (isPublishing) offerStreamToPeer(deviceId)
+                // 仅记录 peer；offer 必须等对方 subscribe 后再发
             }
             "offer" -> handleOffer(msg)
             "answer" -> handleAnswer(msg)
@@ -693,26 +692,25 @@ class WebRTCManager(
 
     fun renegotiateAllPeers() {
         if (!isPublishing) return
-        val targets = (peerConnections.keys.map { it.substringBefore(':') } + knownPeerIds + pendingSubscribers)
-            .filter { it != localDeviceId }
-            .distinct()
+        // 重连后只向已有连接或已 subscribe 的设备重协商，不主动向未订阅 peer 发 offer
+        val targets = (
+            peerConnections.keys.map { it.substringBefore(':') } + pendingSubscribers
+        ).filter { it != localDeviceId }.distinct()
         Log.i(TAG, "向 ${targets.size} 个设备重协商: $targets")
         targets.forEachIndexed { index, remoteId ->
             mainHandler.postDelayed({ offerStreamToPeer(remoteId) }, (index * 200L + 300L))
         }
     }
 
-    /** 推流开始后向排队/已知订阅方发送 offer */
+    /** 推流开始后向已 subscribe 但尚未收到 offer 的设备发送 offer */
     fun flushPendingOffers() {
         if (!isPublishing) return
-        val targets = (pendingSubscribers + knownPeerIds)
-            .filter { it != localDeviceId }
-            .distinct()
+        val targets = pendingSubscribers.filter { it != localDeviceId }.distinct()
         if (targets.isEmpty()) {
             Log.i(TAG, "暂无待推送设备，等待 subscribe")
             return
         }
-        Log.i(TAG, "向 ${targets.size} 个设备推送 offer: $targets")
+        Log.i(TAG, "向 ${targets.size} 个已订阅设备推送 offer: $targets")
         targets.forEach { remoteId ->
             offerStreamToPeer(remoteId)
         }

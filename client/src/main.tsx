@@ -226,6 +226,14 @@ function App() {
         setPublishingDevices((prev) => new Set(prev).add(p.deviceId));
         setSubscribed((prev) => new Set(prev).add(p.deviceId));
         webrtcRef.current?.setDeviceAlpha(p.deviceId, p.hasAlpha);
+        setMappings((prev) => {
+          if (prev.some((m) => m.deviceId === p.deviceId && m.streamType === 'camera')) return prev;
+          const visibleCount = prev.filter((m) => m.visible).length;
+          return [
+            ...prev,
+            createDefaultMapping(p.deviceId, 'camera', visibleCount, visibleCount + 1),
+          ];
+        });
         webrtcRef.current?.requestMobileStream(p.deviceId, 'camera');
       }
     },

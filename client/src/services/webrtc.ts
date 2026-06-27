@@ -128,13 +128,17 @@ export class WebRTCManager {
     if (publisherId === this.localDeviceId) return;
     const key = `${publisherId}:${streamType}`;
     const pc = this.peers.get(key);
-    if (pc && this.isReceiving(pc)) {
+    if (pc && this.isReceiving(pc) && this.remoteStreams.has(key)) {
       console.log('[WebRTC] 已在接收画面，跳过 subscribe:', publisherId);
       return;
     }
     if (pc?.signalingState === 'have-local-offer' || pc?.signalingState === 'have-remote-offer') {
       console.log('[WebRTC] SDP 协商中，跳过 subscribe:', publisherId);
       return;
+    }
+    if (pc && this.isReceiving(pc) && !this.remoteStreams.has(key)) {
+      console.warn('[WebRTC] 连接已建立但无画面，重置并重 subscribe:', publisherId);
+      this.closeSubscriberPc(key);
     }
     const ok = this.signaling.send({
       type: 'subscribe',
@@ -227,7 +231,11 @@ export class WebRTCManager {
 
   private createSubscriberPc(remoteId: string, streamType: StreamType): RTCPeerConnection {
     const key = `${remoteId}:${streamType}`;
+    const savedPending = this.pendingCandidates.get(key) ?? [];
     this.closeSubscriberPc(key);
+    if (savedPending.length > 0) {
+      this.pendingCandidates.set(key, savedPending);
+    }
     const pc = this.createPeerConnection(remoteId, streamType);
     this.peers.set(key, pc);
     return pc;

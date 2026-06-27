@@ -319,6 +319,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                                         Toast.LENGTH_LONG
                                     ).show()
                                 }
+                                webrtcManager?.flushPendingOffers()
                                 rotationSensor?.let {
                                     sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
                                 }

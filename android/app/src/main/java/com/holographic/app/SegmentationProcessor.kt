@@ -9,7 +9,6 @@ import android.graphics.Paint
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffXfermode
 import android.graphics.Rect
-import android.os.SystemClock
 import android.util.Log
 import com.google.mediapipe.framework.image.BitmapImageBuilder
 import com.google.mediapipe.framework.image.ByteBufferExtractor
@@ -23,8 +22,8 @@ import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * WebRTC VideoProcessor — MediaPipe 实时人像分割
- * MediaPipe VIDEO 模式必须在同一 capturer 线程调用，禁止跨线程初始化/推理。
+ * WebRTC VideoProcessor — MediaPipe 人像分割 + 绿幕合成
+ * 使用 IMAGE 模式（每帧独立），segmenter 可在后台线程预初始化。
  */
 class SegmentationProcessor(private val context: Context) : VideoProcessor {
 
@@ -33,9 +32,9 @@ class SegmentationProcessor(private val context: Context) : VideoProcessor {
         private const val MODEL = "selfie_segmenter.tflite"
         private const val PROCESS_WIDTH = 320
         private const val PROCESS_HEIGHT = 180
-        private const val MIN_PROCESS_INTERVAL_MS = 250L
+        private const val MIN_PROCESS_INTERVAL_MS = 300L
         private const val MIN_PERSON_RATIO = 0.05f
-        private const val MASK_BLUR_RADIUS = 6f
+        private const val MASK_BLUR_RADIUS = 4f
     }
 
     private var maskBitmap: Bitmap? = null
@@ -55,9 +54,44 @@ class SegmentationProcessor(private val context: Context) : VideoProcessor {
     private var enabled = false
     private var lastProcessTimeMs = 0L
     private val initFailed = AtomicBoolean(false)
+    private val segmenterLock = Any()
 
     fun setEnabled(value: Boolean) {
         enabled = value
+    }
+
+    /** 在挂载 VideoProcessor 之前于后台线程调用，避免首帧在 capturer 线程初始化导致闪退 */
+    fun prepareSegmenter(): Boolean {
+        if (segmenter != null) return true
+        if (initFailed.get()) return false
+        synchronized(segmenterLock) {
+            if (segmenter != null) return true
+            if (initFailed.get()) return false
+            return try {
+                val options = ImageSegmenter.ImageSegmenterOptions.builder()
+                    .setBaseOptions(
+                        BaseOptions.builder()
+                            .setModelAssetPath(MODEL)
+                            .setDelegate(Delegate.CPU)
+                            .build()
+                    )
+                    .setRunningMode(RunningMode.IMAGE)
+                    .setOutputCategoryMask(true)
+                    .setOutputConfidenceMasks(false)
+                    .build()
+                segmenter = ImageSegmenter.createFromOptions(context, options)
+                Log.i(TAG, "MediaPipe ImageSegmenter 预初始化成功 (IMAGE 模式)")
+                true
+            } catch (e: OutOfMemoryError) {
+                Log.e(TAG, "MediaPipe 初始化 OOM: ${e.message}")
+                initFailed.set(true)
+                false
+            } catch (e: Exception) {
+                Log.e(TAG, "MediaPipe 初始化失败: ${e.message}")
+                initFailed.set(true)
+                false
+            }
+        }
     }
 
     override fun setSink(sink: VideoSink?) {
@@ -65,9 +99,7 @@ class SegmentationProcessor(private val context: Context) : VideoProcessor {
     }
 
     override fun onCapturerStarted(success: Boolean) {
-        if (!success) {
-            Log.e(TAG, "摄像头采集启动失败，抠图处理器待机")
-        }
+        if (!success) Log.e(TAG, "摄像头采集启动失败")
     }
 
     override fun onCapturerStopped() {}
@@ -79,7 +111,7 @@ class SegmentationProcessor(private val context: Context) : VideoProcessor {
             return
         }
 
-        if (!enabled || initFailed.get()) {
+        if (!enabled || initFailed.get() || segmenter == null) {
             targetSink.onFrame(frame)
             return
         }
@@ -91,52 +123,23 @@ class SegmentationProcessor(private val context: Context) : VideoProcessor {
         }
         lastProcessTimeMs = now
 
-        val frameToForward = frame
-        var frameReleased = false
         try {
-            if (!ensureSegmenterOnCaptureThread()) {
-                targetSink.onFrame(frameToForward)
-                return
-            }
-            val processed = processFrame(frameToForward)
-            frameToForward.release()
-            frameReleased = true
+            val processed = processFrame(frame)
+            frame.release()
             targetSink.onFrame(processed)
         } catch (e: OutOfMemoryError) {
-            Log.e(TAG, "分割内存不足，已禁用抠图: ${e.message}")
+            Log.e(TAG, "分割 OOM，已禁用抠图: ${e.message}")
             initFailed.set(true)
             releaseSegmenter()
-            if (!frameReleased) targetSink.onFrame(frameToForward)
+            targetSink.onFrame(frame)
         } catch (e: Exception) {
-            Log.w(TAG, "分割失败: ${e.message}")
-            if (!frameReleased) {
-                targetSink.onFrame(frameToForward)
-            }
-        }
-    }
-
-    private fun ensureSegmenterOnCaptureThread(): Boolean {
-        if (segmenter != null) return true
-        if (initFailed.get()) return false
-        return try {
-            val options = ImageSegmenter.ImageSegmenterOptions.builder()
-                .setBaseOptions(
-                    BaseOptions.builder()
-                        .setModelAssetPath(MODEL)
-                        .setDelegate(Delegate.CPU)
-                        .build()
-                )
-                .setRunningMode(RunningMode.VIDEO)
-                .setOutputCategoryMask(true)
-                .setOutputConfidenceMasks(false)
-                .build()
-            segmenter = ImageSegmenter.createFromOptions(context, options)
-            Log.i(TAG, "MediaPipe ImageSegmenter 就绪 (capturer 线程)")
-            true
-        } catch (e: Exception) {
-            Log.e(TAG, "MediaPipe 初始化失败: ${e.message}")
+            Log.w(TAG, "分割失败，透传原帧: ${e.message}")
+            targetSink.onFrame(frame)
+        } catch (e: Throwable) {
+            Log.e(TAG, "分割致命错误，已禁用抠图: ${e.message}")
             initFailed.set(true)
-            false
+            releaseSegmenter()
+            targetSink.onFrame(frame)
         }
     }
 
@@ -150,12 +153,15 @@ class SegmentationProcessor(private val context: Context) : VideoProcessor {
 
         val scaled = Bitmap.createScaledBitmap(fullBitmap, PROCESS_WIDTH, PROCESS_HEIGHT, true)
         val mpImage = BitmapImageBuilder(scaled).build()
-        val result = segmenter!!.segmentForVideo(mpImage, SystemClock.uptimeMillis())
+        val result: ImageSegmenterResult
+        synchronized(segmenterLock) {
+            result = segmenter!!.segment(mpImage)
+        }
         mpImage.close()
         scaled.recycle()
 
         if (!applyGreenBackground(fullBitmap, result, w, h)) {
-            Log.d(TAG, "保留原始画面（未应用绿幕抠图）")
+            Log.d(TAG, "保留原始画面")
         }
 
         val outI420 = JavaI420Buffer.allocate(w, h)
@@ -165,7 +171,7 @@ class SegmentationProcessor(private val context: Context) : VideoProcessor {
         return VideoFrame(outI420, frame.rotation, frame.timestampNs)
     }
 
-    /** 使用 Canvas + PorterDuff 合成绿幕背景，避免逐像素循环导致 OOM */
+    /** 绿幕合成，不使用 saveLayer（避免部分 GPU OOM 闪退） */
     private fun applyGreenBackground(
         bitmap: Bitmap,
         result: ImageSegmenterResult,
@@ -178,21 +184,16 @@ class SegmentationProcessor(private val context: Context) : VideoProcessor {
         val mw = maskImage.width
         val mh = maskImage.height
 
-        if (!hasEnoughPerson(buffer, mw, mh)) {
-            return false
-        }
+        if (!hasEnoughPerson(buffer, mw, mh)) return false
 
         val maskBitmap = buildBlurredMask(buffer, mw, mh) ?: return false
         val output = ensureCompositedBitmap(w, h)
         val scaledMask = ensureScaledMask(w, h, maskBitmap)
 
-        val outCanvas = Canvas(output)
-        outCanvas.drawColor(Color.GREEN)
-
-        val layer = outCanvas.saveLayer(0f, 0f, w.toFloat(), h.toFloat(), null)
-        outCanvas.drawBitmap(bitmap, 0f, 0f, null)
-        outCanvas.drawBitmap(scaledMask, 0f, 0f, maskXferPaint)
-        outCanvas.restoreToCount(layer)
+        val canvas = Canvas(output)
+        canvas.drawColor(Color.GREEN)
+        canvas.drawBitmap(bitmap, 0f, 0f, null)
+        canvas.drawBitmap(scaledMask, 0f, 0f, maskXferPaint)
 
         Canvas(bitmap).drawBitmap(output, 0f, 0f, null)
         return true
@@ -205,15 +206,13 @@ class SegmentationProcessor(private val context: Context) : VideoProcessor {
         buffer.rewind()
         var i = 0
         while (i < total) {
-            val category = buffer.get(i).toInt() and 0xFF
-            if (category != 0) personCount++
+            if ((buffer.get(i).toInt() and 0xFF) != 0) personCount++
             sampled++
             i += 4
         }
         val ratio = if (sampled > 0) personCount.toFloat() / sampled else 0f
-        Log.d(TAG, "人物像素占比: ${"%.1f".format(ratio * 100)}%")
         if (ratio <= MIN_PERSON_RATIO) {
-            Log.w(TAG, "人像占比过低，跳过本帧抠图")
+            Log.w(TAG, "人像占比 ${"%.1f".format(ratio * 100)}%，跳过抠图")
             return false
         }
         return true
@@ -312,12 +311,14 @@ class SegmentationProcessor(private val context: Context) : VideoProcessor {
     }
 
     private fun releaseSegmenter() {
-        try {
-            segmenter?.close()
-        } catch (e: Exception) {
-            Log.w(TAG, "关闭 segmenter 失败: ${e.message}")
+        synchronized(segmenterLock) {
+            try {
+                segmenter?.close()
+            } catch (e: Exception) {
+                Log.w(TAG, "关闭 segmenter 失败: ${e.message}")
+            }
+            segmenter = null
         }
-        segmenter = null
     }
 
     fun release() {

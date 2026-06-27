@@ -120,38 +120,32 @@ class WebRTCManager(
         Log.i(TAG, "本地渲染器已 init (${localRenderer.width}x${localRenderer.height})")
     }
 
-    private fun waitForLocalSurfaceReady(onReady: () -> Unit) {
+    /** 仅在 Surface 有效尺寸时 init/addSink，避免 0x0 时 native 闪退 */
+    private fun bindLocalPreviewWhenReady(videoTrack: VideoTrack) {
         runOnMainThread {
-            val finish = {
+            fun doBind() {
+                if (localRenderer.width <= 0 || localRenderer.height <= 0) return
                 initLocalRendererOnMainThread()
-                onReady()
+                videoTrack.removeSink(localRenderer)
+                videoTrack.addSink(localRenderer)
+                localRenderer.requestLayout()
+                Log.i(TAG, "本地预览已绑定 (${localRenderer.width}x${localRenderer.height})")
             }
             if (localRenderer.width > 0 && localRenderer.height > 0) {
-                finish()
+                doBind()
                 return@runOnMainThread
             }
-            var done = false
-            val timeout = Runnable {
-                if (done) return@Runnable
-                done = true
-                Log.w(TAG, "本地 Surface 等待超时，强制开始采集")
-                finish()
-            }
-            mainHandler.postDelayed(timeout, 2000)
             val observer = localRenderer.viewTreeObserver
             observer.addOnGlobalLayoutListener(object : ViewTreeObserver.OnGlobalLayoutListener {
                 override fun onGlobalLayout() {
                     if (localRenderer.width <= 0 || localRenderer.height <= 0) return
-                    if (done) return
-                    done = true
-                    mainHandler.removeCallbacks(timeout)
                     if (observer.isAlive) {
                         observer.removeOnGlobalLayoutListener(this)
                     } else {
                         localRenderer.viewTreeObserver.removeOnGlobalLayoutListener(this)
                     }
                     Log.i(TAG, "本地 Surface 就绪: ${localRenderer.width}x${localRenderer.height}")
-                    finish()
+                    doBind()
                 }
             })
         }
@@ -210,7 +204,10 @@ class WebRTCManager(
 
     fun ensureLocalPreviewReady() {
         runOnMainThread {
-            if (localRenderer.visibility == View.VISIBLE) {
+            if (localRenderer.visibility == View.VISIBLE &&
+                localRenderer.width > 0 &&
+                localRenderer.height > 0
+            ) {
                 initLocalRendererOnMainThread()
             }
         }
@@ -219,23 +216,7 @@ class WebRTCManager(
     /** Surface 从 GONE 恢复可见后需重新绑定，否则预览可能黑屏 */
     fun refreshLocalPreview() {
         val track = localVideoTrack ?: return
-        runOnMainThread {
-            initLocalRendererOnMainThread()
-            track.removeSink(localRenderer)
-            track.addSink(localRenderer)
-            localRenderer.requestLayout()
-            Log.i(TAG, "本地预览已刷新 (${localRenderer.width}x${localRenderer.height})")
-        }
-    }
-
-    private fun bindLocalPreview(videoTrack: VideoTrack) {
-        runOnMainThread {
-            initLocalRendererOnMainThread()
-            videoTrack.removeSink(localRenderer)
-            videoTrack.addSink(localRenderer)
-            localRenderer.requestLayout()
-            Log.i(TAG, "本地预览 addSink 完成 (${localRenderer.width}x${localRenderer.height})")
-        }
+        bindLocalPreviewWhenReady(track)
     }
 
     fun startPublishing(enableSegmentation: Boolean, callback: (Boolean) -> Unit) {
@@ -244,7 +225,7 @@ class WebRTCManager(
             return
         }
         ensureReceiveReady()
-        waitForLocalSurfaceReady {
+        mainHandler.post {
             val ok = startPublishingInternal(enableSegmentation)
             callback(ok)
         }
@@ -316,7 +297,7 @@ class WebRTCManager(
             val videoTrack = peerFactory.createVideoTrack("video0", source)
             localVideoTrack = videoTrack
             videoTrack.setEnabled(true)
-            bindLocalPreview(videoTrack)
+            bindLocalPreviewWhenReady(videoTrack)
 
             val audioConstraints = MediaConstraints()
             val aSource = peerFactory.createAudioSource(audioConstraints)
@@ -337,18 +318,39 @@ class WebRTCManager(
     private fun scheduleSegmentationAttach(source: VideoSource) {
         mainHandler.postDelayed({
             if (!isPublishing || videoSource !== source) return@postDelayed
-            try {
+            Thread {
                 val processor = SegmentationProcessor(appContext)
-                processor.setEnabled(true)
-                source.setVideoProcessor(processor)
-                segmentationProcessor = processor
-                segmentationPending = false
-                Log.i(TAG, "MediaPipe 抠图已延迟挂载")
-                refreshLocalPreview()
-            } catch (e: Exception) {
-                Log.e(TAG, "MediaPipe 挂载失败，继续普通推流", e)
-                segmentationPending = false
-            }
+                val ready = try {
+                    processor.prepareSegmenter()
+                } catch (e: Exception) {
+                    Log.e(TAG, "MediaPipe 预初始化异常: ${e.message}")
+                    false
+                }
+                mainHandler.post {
+                    if (!isPublishing || videoSource !== source) {
+                        processor.release()
+                        segmentationPending = false
+                        return@post
+                    }
+                    if (!ready) {
+                        processor.release()
+                        segmentationPending = false
+                        Log.w(TAG, "MediaPipe 不可用，继续普通推流")
+                        return@post
+                    }
+                    try {
+                        processor.setEnabled(true)
+                        source.setVideoProcessor(processor)
+                        segmentationProcessor = processor
+                        segmentationPending = false
+                        Log.i(TAG, "MediaPipe 抠图已挂载")
+                    } catch (e: Exception) {
+                        processor.release()
+                        segmentationPending = false
+                        Log.e(TAG, "MediaPipe 挂载失败，继续普通推流", e)
+                    }
+                }
+            }.start()
         }, SEGMENTATION_DELAY_MS)
     }
 
@@ -662,7 +664,7 @@ class WebRTCManager(
         }
         Log.i(TAG, "向 ${targets.size} 个设备推送 offer: $targets")
         targets.forEachIndexed { index, remoteId ->
-            mainHandler.postDelayed({ offerStreamToPeer(remoteId) }, index * 150L + 200L)
+            mainHandler.postDelayed({ offerStreamToPeer(remoteId) }, index * 200L + 800L)
         }
     }
 
@@ -743,10 +745,24 @@ class WebRTCManager(
                 Log.i(TAG, "收到远端轨道: $track, streams: ${streams?.size ?: 0}")
                 if (track is VideoTrack && receiveReady && remoteRenderer != null) {
                     runOnMainThread {
-                        initRemoteRendererOnMainThread()
-                        track.addSink(remoteRenderer)
-                        remoteRenderer.visibility = View.VISIBLE
-                        Log.i(TAG, "远端视频已绑定到渲染器: $remoteId")
+                        if (remoteRenderer.width <= 0 || remoteRenderer.height <= 0) {
+                            remoteRenderer.viewTreeObserver.addOnGlobalLayoutListener(object :
+                                ViewTreeObserver.OnGlobalLayoutListener {
+                                override fun onGlobalLayout() {
+                                    if (remoteRenderer.width <= 0 || remoteRenderer.height <= 0) return
+                                    remoteRenderer.viewTreeObserver.removeOnGlobalLayoutListener(this)
+                                    initRemoteRendererOnMainThread()
+                                    track.addSink(remoteRenderer)
+                                    remoteRenderer.visibility = View.VISIBLE
+                                    Log.i(TAG, "远端视频已绑定: $remoteId")
+                                }
+                            })
+                        } else {
+                            initRemoteRendererOnMainThread()
+                            track.addSink(remoteRenderer)
+                            remoteRenderer.visibility = View.VISIBLE
+                            Log.i(TAG, "远端视频已绑定到渲染器: $remoteId")
+                        }
                     }
                 }
             }

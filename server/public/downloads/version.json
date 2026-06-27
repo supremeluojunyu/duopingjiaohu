@@ -1,10 +1,10 @@
 {
-  "versionName": "0.1.8.13",
-  "versionCode": 19,
-  "fileName": "holographic-0.1.8.13.apk",
-  "fileSize": 98805774,
-  "sha256": "49a8d9dec0e65227ad2ebc4a7f8acb9945d7a755e3b592816f40df93cce00a09",
-  "updatedAt": "2026-06-27T06:47:44.000Z",
+  "versionName": "0.1.8.14",
+  "versionCode": 20,
+  "fileName": "holographic-0.1.8.14.apk",
+  "fileSize": 98745618,
+  "sha256": "a9011909336ca1903ccc855d62603f78add39419ef20dd32ea22303b59bf86b7",
+  "updatedAt": "2026-06-27T07:04:47.000Z",
   "available": true,
-  "releaseNotes": "修复投屏无画面与抠像闪退 v0.1.8.13"
+  "releaseNotes": "修复本地预览+ICE序列化+抠图延迟 v0.1.8.14"
 }

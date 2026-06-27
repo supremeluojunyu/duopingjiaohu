@@ -186,7 +186,21 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         Thread {
             var client: SignalingClient? = null
             try {
+                val joinPayload = mapOf(
+                    "roomId" to normalizedRoomId,
+                    "device" to mapOf(
+                        "name" to android.os.Build.MODEL,
+                        "type" to "mobile",
+                        "role" to "user",
+                        "streamTypes" to listOf("camera"),
+                        "hasAlpha" to segmentationEnabled
+                    )
+                )
+
                 client = SignalingClient(SignalingConfig.getServerUrl())
+                client.setJoinPayload(joinPayload)
+                client.onMessage { msg -> runOnUiThread { handleSignalingMessage(msg) } }
+
                 if (!client.connect()) {
                     client.disconnect()
                     runOnUiThread {
@@ -210,29 +224,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                     }
                 }
                 client.startPing()
-
-                client.onMessage { msg -> runOnUiThread { handleSignalingMessage(msg) } }
-
-                val joinPayload = mapOf(
-                    "roomId" to normalizedRoomId,
-                    "device" to mapOf(
-                        "name" to android.os.Build.MODEL,
-                        "type" to "mobile",
-                        "role" to "user",
-                        "streamTypes" to listOf("camera"),
-                        "hasAlpha" to segmentationEnabled
-                    )
-                )
-                client.setJoinPayload(joinPayload)
-                if (!client.send("join", joinPayload)) {
-                    runOnUiThread {
-                        Toast.makeText(this, "加入房间消息发送失败", Toast.LENGTH_LONG).show()
-                        client.disconnect()
-                        finishJoinAttempt()
-                    }
-                    return@Thread
-                }
-
                 signalingClient = client
             } catch (e: Exception) {
                 client?.disconnect()
@@ -286,65 +277,51 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             binding.tvEmptyHint.visibility = View.VISIBLE
             sensorManager?.unregisterListener(this)
         } else {
+            if (!PermissionsHelper.allGranted(this)) {
+                Toast.makeText(this, "需要摄像头和麦克风权限", Toast.LENGTH_LONG).show()
+                requestPermissionsIfNeeded()
+                return
+            }
             binding.btnStartCast.isEnabled = false
             Thread {
                 try {
                     val iceServers = IceConfigFetcher.fetch(SignalingConfig.getServerUrl())
                     runOnUiThread {
                         binding.btnStartCast.isEnabled = true
-                        try {
-                            ensureWebRtcManager()
-                            val manager = webrtcManager
-                            if (manager == null) {
-                                Toast.makeText(this, "连接未就绪，请稍后再试", Toast.LENGTH_SHORT).show()
-                                return@runOnUiThread
+                        ensureWebRtcManager()
+                        val manager = webrtcManager
+                        if (manager == null) {
+                            Toast.makeText(this, "连接未就绪，请稍后再试", Toast.LENGTH_SHORT).show()
+                            return@runOnUiThread
+                        }
+                        manager.setIceServers(iceServers)
+                        manager.setKnownPeerIds(knownDeviceIds.toSet())
+                        binding.localPreview.visibility = View.VISIBLE
+                        binding.tvEmptyHint.visibility = View.GONE
+                        binding.remotePreview.visibility = View.GONE
+                        binding.localPreview.bringToFront()
+                        manager.startPublishing(segmentationEnabled) { ok ->
+                            if (!ok) {
+                                binding.localPreview.visibility = View.GONE
+                                binding.tvEmptyHint.visibility = View.VISIBLE
+                                Toast.makeText(this, "无法打开摄像头，请检查权限", Toast.LENGTH_LONG).show()
+                                return@startPublishing
                             }
-                            manager.setIceServers(iceServers)
-                            manager.setKnownPeerIds(knownDeviceIds.toSet())
-                            binding.localPreview.visibility = View.VISIBLE
-                            binding.tvEmptyHint.visibility = View.GONE
-                            binding.remotePreview.visibility = View.GONE
-                            binding.localPreview.post {
-                                try {
-                                    manager.ensureLocalPreviewReady()
-                                    if (!manager.startPublishing(segmentationEnabled)) {
-                                        binding.localPreview.visibility = View.GONE
-                                        binding.tvEmptyHint.visibility = View.VISIBLE
-                                        Toast.makeText(this, "无法打开摄像头，请检查权限", Toast.LENGTH_LONG).show()
-                                        return@post
-                                    }
-                                    isPublishing = true
-                                    binding.btnStartCast.text = "停止投屏"
-                                    if (!notifyPublishStarted()) {
-                                        Toast.makeText(
-                                            this,
-                                            "信令已断开，投屏状态可能未同步",
-                                            Toast.LENGTH_LONG
-                                        ).show()
-                                    }
-                                    // 等待摄像头首帧后再协商，避免空 track offer
-                                    binding.localPreview.postDelayed({
-                                        manager.renegotiateAllPeers()
-                                    }, 500)
-                                    rotationSensor?.let {
-                                        sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
-                                    }
-                                } catch (e: Exception) {
-                                    isPublishing = false
-                                    webrtcManager?.stopPublishing()
-                                    binding.localPreview.visibility = View.GONE
-                                    binding.tvEmptyHint.visibility = View.VISIBLE
-                                    binding.btnStartCast.text = "开始投屏"
-                                    Toast.makeText(this, "投屏失败: ${e.message}", Toast.LENGTH_LONG).show()
-                                }
+                            isPublishing = true
+                            binding.btnStartCast.text = "停止投屏"
+                            if (!notifyPublishStarted()) {
+                                Toast.makeText(
+                                    this,
+                                    "信令已断开，投屏状态可能未同步",
+                                    Toast.LENGTH_LONG
+                                ).show()
                             }
-                        } catch (e: Exception) {
-                            isPublishing = false
-                            webrtcManager?.stopPublishing()
-                            binding.localPreview.visibility = View.GONE
-                            binding.tvEmptyHint.visibility = View.VISIBLE
-                            binding.btnStartCast.text = "开始投屏"
-                            Toast.makeText(this, "投屏失败: ${e.message}", Toast.LENGTH_LONG).show()
+                            binding.localPreview.postDelayed({
+                                manager.renegotiateAllPeers()
+                            }, 800)
+                            rotationSensor?.let {
+                                sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
+                            }
                         }
                     }
                 } catch (e: Exception) {

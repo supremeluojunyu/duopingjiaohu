@@ -297,6 +297,28 @@ export class WebRTCManager {
     });
   }
 
+  private serializeIceCandidate(candidate: RTCIceCandidate): RTCIceCandidateInit {
+    if (typeof candidate.toJSON === 'function') {
+      return candidate.toJSON();
+    }
+    return {
+      candidate: candidate.candidate,
+      sdpMid: candidate.sdpMid,
+      sdpMLineIndex: candidate.sdpMLineIndex,
+    };
+  }
+
+  private normalizeIceCandidate(raw: unknown): RTCIceCandidateInit | null {
+    if (!raw || typeof raw !== 'object') return null;
+    const c = raw as RTCIceCandidateInit;
+    if (!c.candidate || typeof c.candidate !== 'string') return null;
+    return {
+      candidate: c.candidate,
+      sdpMid: c.sdpMid ?? null,
+      sdpMLineIndex: c.sdpMLineIndex ?? 0,
+    };
+  }
+
   private createPeerConnection(remoteId: string, streamType: StreamType): RTCPeerConnection {
     const pc = new RTCPeerConnection({
       iceServers: this.iceServers.length > 0 ? this.iceServers : getCachedIceServers(),
@@ -309,7 +331,11 @@ export class WebRTCManager {
         this.signaling.send({
           type: 'ice',
           to: remoteId,
-          payload: { candidate: event.candidate, streamType, targetId: remoteId },
+          payload: {
+            candidate: this.serializeIceCandidate(event.candidate),
+            streamType,
+            targetId: remoteId,
+          },
         });
       }
     };
@@ -439,7 +465,11 @@ export class WebRTCManager {
         if (!msg.from) return;
         const key = `${msg.from}:${streamType}`;
         const pc = this.peers.get(key);
-        const candidate = msg.payload.candidate as RTCIceCandidateInit;
+        const candidate = this.normalizeIceCandidate(msg.payload.candidate);
+        if (!candidate) {
+          console.warn('[WebRTC] 忽略无效 ICE candidate', msg.from);
+          return;
+        }
         if (pc && pc.remoteDescription) {
           await pc.addIceCandidate(new RTCIceCandidate(candidate));
         } else {

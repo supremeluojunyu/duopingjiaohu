@@ -28,7 +28,7 @@ class SegmentationProcessor(private val context: Context) : VideoProcessor {
         private const val PROCESS_WIDTH = 320
         private const val PROCESS_HEIGHT = 180
         private const val MIN_PROCESS_INTERVAL_MS = 150L
-        private const val MASK_BLUR_RADIUS = 4f
+        private const val MASK_BLUR_RADIUS = 6f
     }
 
     private var maskBitmap: Bitmap? = null
@@ -109,14 +109,19 @@ class SegmentationProcessor(private val context: Context) : VideoProcessor {
         }
         lastProcessTimeMs = now
 
+        val frameToForward = frame
+        var frameReleased = false
         try {
-            val processed = processFrame(frame)
-            frame.release()
+            val processed = processFrame(frameToForward)
+            frameToForward.release()
+            frameReleased = true
             targetSink.onFrame(processed)
             processed.release()
         } catch (e: Exception) {
             Log.w(TAG, "分割失败: ${e.message}")
-            targetSink.onFrame(frame)
+            if (!frameReleased) {
+                targetSink.onFrame(frameToForward)
+            }
         }
     }
 

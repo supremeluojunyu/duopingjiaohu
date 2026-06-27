@@ -154,7 +154,9 @@ jobs:
     if: >
       github.event_name == 'push' &&
       startsWith(github.ref, 'refs/tags/v') &&
-      needs.build-windows.result == 'success'
+      needs.build-windows.result == 'success' &&
+      needs.build-linux.result == 'success' &&
+      needs.build-android.result == 'success'
     permissions:
       contents: write
     steps:

@@ -245,7 +245,10 @@ export class WebRTCManager {
 
     this.makingOffer.add(key);
     try {
-      const offer = await pc.createOffer();
+      const offer = await pc.createOffer({
+        offerToReceiveAudio: false,
+        offerToReceiveVideo: false,
+      });
       await pc.setLocalDescription(offer);
       this.signaling.send({
         type: 'offer',

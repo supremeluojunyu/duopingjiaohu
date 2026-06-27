@@ -3,7 +3,11 @@ export function getIceServers(): RTCIceServer[] {
   const servers: RTCIceServer[] = [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' },
     { urls: 'stun:stun.qq.com:3478' },
+    { urls: 'stun:stun.qq.com:19302' },
   ];
 
   const turnUrl = import.meta.env.VITE_TURN_URL;

@@ -82,6 +82,10 @@ export function AdminPanel({
               onChange={(v) => update('scale', '', v)} />
             <Slider label="Height (高度)" value={mapping.position.y} min={0} max={4} step={0.1}
               onChange={(v) => update('position', 'y', v)} />
+            <Slider label="X Position (X轴)" value={mapping.position.x} min={-5} max={5} step={0.1}
+              onChange={(v) => update('position', 'x', v)} />
+            <Slider label="Z Position (Z轴)" value={mapping.position.z} min={-5} max={5} step={0.1}
+              onChange={(v) => update('position', 'z', v)} />
 
             <button
               className="btn-secondary"

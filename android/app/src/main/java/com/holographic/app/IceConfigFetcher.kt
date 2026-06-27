@@ -18,7 +18,11 @@ object IceConfigFetcher {
     private val fallback = listOf(
         PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
         PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer(),
-        PeerConnection.IceServer.builder("stun:stun.qq.com:3478").createIceServer()
+        PeerConnection.IceServer.builder("stun:stun2.l.google.com:19302").createIceServer(),
+        PeerConnection.IceServer.builder("stun:stun3.l.google.com:19302").createIceServer(),
+        PeerConnection.IceServer.builder("stun:stun4.l.google.com:19302").createIceServer(),
+        PeerConnection.IceServer.builder("stun:stun.qq.com:3478").createIceServer(),
+        PeerConnection.IceServer.builder("stun:stun.qq.com:19302").createIceServer()
     )
 
     fun httpBaseFromSignalingUrl(signalingUrl: String): String {

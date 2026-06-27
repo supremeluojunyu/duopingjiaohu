@@ -1,4 +1,4 @@
-import { LATENCY_PING_INTERVAL_MS, MAX_RECONNECT_ATTEMPTS, PING_INTERVAL_MS, RECONNECT_INTERVAL_MS } from '../config';
+import { LATENCY_PING_INTERVAL_MS, MAX_RECONNECT_ATTEMPTS, RECONNECT_INTERVAL_MS } from '../config';
 import { SignalingMessage } from '../types';
 
 type MessageHandler = (msg: SignalingMessage) => void;
@@ -6,7 +6,6 @@ type MessageHandler = (msg: SignalingMessage) => void;
 export class SignalingClient {
   private ws: WebSocket | null = null;
   private handlers = new Set<MessageHandler>();
-  private pingInterval: ReturnType<typeof setInterval> | null = null;
   private latencyPingInterval: ReturnType<typeof setInterval> | null = null;
   private onLatency?: (ms: number) => void;
   private onConnectionChange?: (connected: boolean) => void;
@@ -131,19 +130,14 @@ export class SignalingClient {
   }
 
   private startPing(): void {
-    this.send({ type: 'ping', payload: {} });
+    this.send({ type: 'ping', payload: { sentAt: Date.now() } });
     this.latencyPingInterval = setInterval(() => {
-      this.send({ type: 'ping', payload: {} });
+      this.send({ type: 'ping', payload: { sentAt: Date.now() } });
     }, LATENCY_PING_INTERVAL_MS);
-    this.pingInterval = setInterval(() => {
-      this.send({ type: 'ping', payload: {} });
-    }, PING_INTERVAL_MS);
   }
 
   private stopPing(): void {
     if (this.latencyPingInterval) clearInterval(this.latencyPingInterval);
     this.latencyPingInterval = null;
-    if (this.pingInterval) clearInterval(this.pingInterval);
-    this.pingInterval = null;
   }
 }

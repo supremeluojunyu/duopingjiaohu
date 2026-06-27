@@ -27,7 +27,11 @@ class WebRTCManager(
         private val FALLBACK_ICE = listOf(
             IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
             IceServer.builder("stun:stun1.l.google.com:19302").createIceServer(),
-            IceServer.builder("stun:stun.qq.com:3478").createIceServer()
+            IceServer.builder("stun:stun2.l.google.com:19302").createIceServer(),
+            IceServer.builder("stun:stun3.l.google.com:19302").createIceServer(),
+            IceServer.builder("stun:stun4.l.google.com:19302").createIceServer(),
+            IceServer.builder("stun:stun.qq.com:3478").createIceServer(),
+            IceServer.builder("stun:stun.qq.com:19302").createIceServer()
         )
     }
 
@@ -246,21 +250,20 @@ class WebRTCManager(
         }
     }
 
-    /** 作为订阅方等待发布端 offer；发送 subscribe 触发对方 re-offer */
+    /** 作为订阅方等待发布端 offer；仅发 subscribe，不在此预建 PeerConnection */
     fun noteAwaitingPublisher(publisherId: String) {
         if (publisherId == localDeviceId) return
         notePeerJoined(publisherId)
         ensureReceiveReady()
         val key = peerKey(publisherId)
         val existing = peerConnections[key]
-        if (existing == null ||
-            existing.connectionState() == PeerConnection.PeerConnectionState.FAILED ||
-            existing.connectionState() == PeerConnection.PeerConnectionState.CLOSED ||
-            existing.connectionState() == PeerConnection.PeerConnectionState.DISCONNECTED
+        if (existing != null &&
+            (existing.connectionState() == PeerConnection.PeerConnectionState.FAILED ||
+                existing.connectionState() == PeerConnection.PeerConnectionState.CLOSED ||
+                existing.connectionState() == PeerConnection.PeerConnectionState.DISCONNECTED)
         ) {
-            existing?.close()
+            existing.close()
             peerConnections.remove(key)
-            peerConnections[key] = getOrCreatePeerConnection(publisherId)
         }
         if (!signaling.send(
                 "subscribe",
@@ -320,7 +323,10 @@ class WebRTCManager(
             override fun onSetFailure(error: String?) {
                 makingOffer.remove(key)
             }
-        }, MediaConstraints())
+        }, MediaConstraints().apply {
+            mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", "false"))
+            mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "false"))
+        })
     }
 
     fun handleSignalingMessage(msg: SignalingClient.SignalingMessage) {
@@ -528,8 +534,14 @@ class WebRTCManager(
                 Log.d(TAG, "已有进行中的 offer，400ms 后重试: $remoteId")
                 return
             }
+            val videoTrack = localVideoTrack
+            if (videoTrack == null) {
+                Log.e(TAG, "本地视频轨道为空，无法发送 offer")
+                return
+            }
             val pc = getOrCreatePeerConnection(remoteId)
             attachLocalTracks(pc)
+            Log.i(TAG, "准备向 $remoteId 发送 offer")
             makingOffer.add(key)
 
             val offerConstraints = MediaConstraints().apply {
@@ -629,24 +641,38 @@ class WebRTCManager(
                     ),
                     to = remoteId
                 ).let { ok ->
-                    if (!ok) Log.w(TAG, "ICE 候选发送失败: $remoteId")
+                    if (ok) {
+                        Log.i(TAG, "ICE 候选已发送: $remoteId")
+                    } else {
+                        Log.w(TAG, "ICE 候选发送失败: $remoteId")
+                    }
                 }
             }
 
             override fun onAddTrack(receiver: RtpReceiver?, streams: Array<out MediaStream>?) {
                 val track = receiver?.track()
+                Log.i(TAG, "收到远端轨道: $track, streams: ${streams?.size ?: 0}")
                 if (track is VideoTrack && remoteRenderer != null) {
                     track.addSink(remoteRenderer)
-                    Log.i(TAG, "收到远端视频: $remoteId")
+                    Log.i(TAG, "远端视频已绑定到渲染器: $remoteId")
                 }
             }
 
             override fun onSignalingChange(state: PeerConnection.SignalingState?) {}
             override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
-                Log.d(TAG, "ICE 状态 $remoteId: $state")
+                when (state) {
+                    PeerConnection.IceConnectionState.CONNECTED ->
+                        Log.i(TAG, "ICE 连接已建立: $remoteId")
+                    PeerConnection.IceConnectionState.FAILED ->
+                        Log.e(TAG, "ICE 连接失败: $remoteId")
+                    else ->
+                        Log.d(TAG, "ICE 连接状态 $remoteId: $state")
+                }
             }
             override fun onIceConnectionReceivingChange(receiving: Boolean) {}
-            override fun onIceGatheringChange(state: PeerConnection.IceGatheringState?) {}
+            override fun onIceGatheringChange(state: PeerConnection.IceGatheringState?) {
+                Log.d(TAG, "ICE 收集状态 $remoteId: $state")
+            }
             override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>?) {}
             override fun onAddStream(stream: MediaStream?) {}
             override fun onRemoveStream(stream: MediaStream?) {}

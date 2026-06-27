@@ -9,11 +9,15 @@ import { roomManager } from './room-manager.js';
 import {
   ensureDownloadsDir,
   getDownloadsDir,
+  publishExeFromBuffer,
+  readDesktopReleaseInfo,
   readReleaseInfo,
+  toPublicDesktopRelease,
   toPublicRelease,
 } from './app-release.js';
 
 const PORT = Number(process.env.PORT ?? 9876);
+const PUBLISH_SECRET = process.env.PUBLISH_SECRET ?? '';
 const app = express();
 
 app.use(cors());
@@ -25,6 +29,10 @@ app.use('/downloads', express.static(getDownloadsDir(), {
     if (filePath.endsWith('.apk')) {
       res.setHeader('Content-Type', 'application/vnd.android.package-archive');
       res.setHeader('Content-Disposition', 'attachment; filename="holographic.apk"');
+    }
+    if (filePath.endsWith('.exe')) {
+      res.setHeader('Content-Type', 'application/octet-stream');
+      res.setHeader('Content-Disposition', 'attachment; filename="HolographicSystem.exe"');
     }
   },
 }));
@@ -54,6 +62,36 @@ app.get('/api/app/version', (req, res) => {
   const info = readReleaseInfo();
   res.json(toPublicRelease(info, getBaseUrl(req)));
 });
+
+app.get('/api/desktop/version', (req, res) => {
+  const info = readDesktopReleaseInfo();
+  res.json(toPublicDesktopRelease(info, getBaseUrl(req)));
+});
+
+app.post(
+  '/api/admin/publish-exe',
+  express.raw({ limit: '600mb', type: 'application/octet-stream' }),
+  (req, res) => {
+    const token = String(req.query.token ?? '');
+    if (PUBLISH_SECRET && token !== PUBLISH_SECRET) {
+      res.status(401).json({ error: 'unauthorized' });
+      return;
+    }
+    const version = String(req.query.version ?? '');
+    if (!/^\d+\.\d+\.\d+\.\d+$/.test(version)) {
+      res.status(400).json({ error: 'invalid version, expected x.y.z.w' });
+      return;
+    }
+    if (!Buffer.isBuffer(req.body) || req.body.length < 1024) {
+      res.status(400).json({ error: 'empty exe body' });
+      return;
+    }
+    const notes = String(req.query.notes ?? `桌面端 v${version}`);
+    const info = publishExeFromBuffer(req.body, { versionName: version, releaseNotes: notes });
+    console.log(`[Publish] EXE v${info.versionName} (${info.fileSize} bytes)`);
+    res.json(toPublicDesktopRelease(info, getBaseUrl(req)));
+  }
+);
 
 app.post('/rooms', (_req, res) => {
   const room = roomManager.createRoom();
@@ -92,4 +130,6 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`  WebSocket: ws://0.0.0.0:${PORT}/ws`);
   console.log(`  APK 版本: http://0.0.0.0:${PORT}/api/app/version`);
   console.log(`  APK 下载: http://0.0.0.0:${PORT}/downloads/app-latest.apk`);
+  console.log(`  EXE 版本: http://0.0.0.0:${PORT}/api/desktop/version`);
+  console.log(`  EXE 下载: http://0.0.0.0:${PORT}/downloads/app-latest.exe`);
 });

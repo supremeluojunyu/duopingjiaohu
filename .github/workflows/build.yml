@@ -222,3 +222,22 @@ jobs:
           files: release-bundle/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload EXE to signaling server
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          EXE=$(find release-bundle -maxdepth 1 -name 'HolographicSystem-Portable*.exe' | head -1)
+          if [ -z "$EXE" ]; then
+            echo "No portable EXE found in release-bundle"
+            ls -lah release-bundle/
+            exit 1
+          fi
+          echo "Uploading $EXE (${VERSION}) to signaling server..."
+          TOKEN="${{ secrets.PUBLISH_SECRET }}"
+          URL="http://124.220.4.69:9000/api/admin/publish-exe?version=${VERSION}&notes=v${VERSION}%20CI%20release"
+          if [ -n "$TOKEN" ]; then URL="${URL}&token=${TOKEN}"; fi
+          curl -f --connect-timeout 30 -m 900 \
+            -H "Content-Type: application/octet-stream" \
+            --data-binary @"$EXE" \
+            "$URL"
+          echo "EXE uploaded to signaling server"

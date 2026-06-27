@@ -990,7 +990,7 @@ function GridVideo({
     const video = ref.current;
     if (!video) return;
     return bindVideoToStream(video, stream);
-  }, [stream]);
+  }, [stream, stream.getVideoTracks()[0]?.id]);
 
   useEffect(() => {
     if (!hasAlpha) return;

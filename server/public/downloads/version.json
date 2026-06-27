@@ -1,10 +1,10 @@
 {
-  "versionName": "0.1.8.16",
-  "versionCode": 22,
-  "fileName": "holographic-0.1.8.16.apk",
+  "versionName": "0.1.8.18",
+  "versionCode": 24,
+  "fileName": "holographic-0.1.8.18.apk",
   "fileSize": 98745618,
-  "sha256": "606b299644040ae105e0bb33e9c83e7a18801f86c9c469e6b09b808a8a8af528",
-  "updatedAt": "2026-06-27T07:49:38.000Z",
+  "sha256": "cceabdc7e664221c13f7834855b9b57c53db340a93b44b92fb17e4f1afa6e05b",
+  "updatedAt": "2026-06-27T08:41:41.000Z",
   "available": true,
-  "releaseNotes": "v0.1.8.16 WebRTC 投屏修复 + EXE 自动发布"
+  "releaseNotes": "v0.1.8.18 修复电脑无画面/抠图绿屏闪退"
 }

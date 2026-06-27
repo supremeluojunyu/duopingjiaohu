@@ -314,6 +314,10 @@ export function useScene3D(
       if (obj.video.srcObject !== remote.stream) {
         obj.video.srcObject = remote.stream;
         console.log('[Scene3D] 设置远端流:', key, 'readyState:', obj.video.readyState);
+      } else if (obj.video.paused && obj.video.readyState >= 2) {
+        obj.video.play().catch((e) => {
+          console.warn('[Scene3D] 视频播放失败:', key, e);
+        });
       }
       const playVideo = () => {
         obj.video.play().catch((e) => {

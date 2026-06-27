@@ -29,7 +29,8 @@ class SegmentationProcessor(private val context: Context) : VideoProcessor {
         private const val MODEL = "selfie_segmenter.tflite"
         private const val PROCESS_WIDTH = 320
         private const val PROCESS_HEIGHT = 180
-        private const val MIN_PROCESS_INTERVAL_MS = 150L
+        private const val MIN_PROCESS_INTERVAL_MS = 200L
+        private const val MIN_PERSON_RATIO = 0.02f
         private const val MASK_BLUR_RADIUS = 6f
     }
 
@@ -91,7 +92,7 @@ class SegmentationProcessor(private val context: Context) : VideoProcessor {
             frameToForward.release()
             frameReleased = true
             targetSink.onFrame(processed)
-            processed.release()
+            // 帧所有权已交给 VideoSource，不可在此处 release
         } catch (e: OutOfMemoryError) {
             Log.e(TAG, "分割内存不足，已禁用抠图: ${e.message}")
             initFailed.set(true)
@@ -169,6 +170,21 @@ class SegmentationProcessor(private val context: Context) : VideoProcessor {
 
         val pixels = IntArray(w * h)
         bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
+
+        var personPixels = 0
+        val totalPixels = w * h
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                val mx = (x * mw / w).coerceIn(0, mw - 1)
+                val my = (y * mh / h).coerceIn(0, mh - 1)
+                val maskAlpha = blurredMask.getPixel(mx, my) and 0xFF
+                if (maskAlpha > 128) personPixels++
+            }
+        }
+        if (personPixels < (totalPixels * MIN_PERSON_RATIO).toInt()) {
+            Log.w(TAG, "人像占比过低 (${personPixels}/$totalPixels)，跳过本帧抠图")
+            return
+        }
 
         for (y in 0 until h) {
             for (x in 0 until w) {

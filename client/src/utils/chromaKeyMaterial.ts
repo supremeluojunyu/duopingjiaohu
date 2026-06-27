@@ -9,11 +9,9 @@ void main() {
   float greenness = c.g - max(c.r, c.b);
   float luma = dot(c.rgb, vec3(0.299, 0.587, 0.114));
 
-  // 绿幕区域：平滑过渡为透明
+  // 绿幕区域：平滑过渡为透明（仅抠绿幕，保留暗色人像细节）
   float key = smoothstep(0.08, 0.28, greenness) * step(0.22, c.g);
-  // 纯黑背景也去掉
-  float black = 1.0 - smoothstep(0.0, 0.14, luma);
-  float alpha = 1.0 - max(key, black * step(greenness, 0.05));
+  float alpha = 1.0 - key;
 
   if (alpha < 0.04) discard;
   gl_FragColor = vec4(c.rgb, alpha);
@@ -93,9 +91,8 @@ export function drawChromaKeyedFrame(
     const g = d[i + 1]!;
     const b = d[i + 2]!;
     const greenness = g - Math.max(r, b);
-    const luma = 0.299 * r + 0.587 * g + 0.114 * b;
 
-    if ((greenness > 28 && g > 56) || (luma < 36 && greenness < 14)) {
+    if (greenness > 28 && g > 56) {
       d[i + 3] = 0;
     }
   }

@@ -343,22 +343,23 @@ export class WebRTCManager {
     pc.ontrack = (event) => {
       const track = event.track;
       track.enabled = true;
+
+      if (track.kind !== 'video') {
+        console.log('[WebRTC] 忽略非视频轨道:', track.kind, track.label);
+        return;
+      }
+
       console.log('[WebRTC] 收到远端轨道:', track.kind, track.label, 'enabled:', track.enabled);
 
       const key = `${remoteId}:${streamType}`;
-      let stream = this.remoteStreams.get(key)?.stream;
-      if (!stream || !stream.getTracks().some((t) => t.id === track.id)) {
-        stream = new MediaStream([track]);
-      } else if (!stream.getTracks().includes(track)) {
-        stream.addTrack(track);
-      }
-      console.log('[WebRTC] 远端流 tracks:', stream.getTracks().length);
+      const stream = new MediaStream([track]);
+      console.log('[WebRTC] 远端流 tracks:', stream.getVideoTracks().length);
 
       const publish = () => {
         this.remoteStreams.set(key, {
           deviceId: remoteId,
           streamType,
-          stream: stream!,
+          stream,
           hasAlpha: this.deviceAlpha.get(remoteId) ?? false,
         });
         console.info(

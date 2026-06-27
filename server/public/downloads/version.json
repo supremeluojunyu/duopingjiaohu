@@ -1,10 +1,10 @@
 {
-  "versionName": "0.1.8.19",
-  "versionCode": 25,
-  "fileName": "holographic-0.1.8.19.apk",
-  "fileSize": 98745618,
-  "sha256": "8fc856528ab4115a3961a4a7bc942769dc54f1f719d8f23190234a8275138123",
-  "updatedAt": "2026-06-27T08:48:12.000Z",
+  "versionName": "0.1.8.27",
+  "versionCode": 33,
+  "fileName": "holographic-0.1.8.27.apk",
+  "fileSize": 98745650,
+  "sha256": "06144279c480860c9dae22bf127ccc3297d2f72ccc9f430f95c865aab80ef4ee",
+  "updatedAt": "2026-06-27T11:40:31.000Z",
   "available": true,
-  "releaseNotes": "v0.1.8.19 Canvas抠图+Web纹理修复"
+  "releaseNotes": "修复投屏无画面：严格 subscribe-first 协议，保留 ICE 候选，补全 3D mapping"
 }

@@ -304,25 +304,36 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                             binding.localPreview.visibility = View.VISIBLE
                             binding.tvEmptyHint.visibility = View.GONE
                             binding.remotePreview.visibility = View.GONE
-                            if (!manager.startPublishing(segmentationEnabled)) {
-                                binding.localPreview.visibility = View.GONE
-                                binding.tvEmptyHint.visibility = View.VISIBLE
-                                Toast.makeText(this, "无法打开摄像头，请检查权限", Toast.LENGTH_LONG).show()
-                                return@runOnUiThread
-                            }
-                            isPublishing = true
-                            binding.btnStartCast.text = "停止投屏"
-                            if (!notifyPublishStarted()) {
-                                Toast.makeText(
-                                    this,
-                                    "信令已断开，投屏状态可能未同步",
-                                    Toast.LENGTH_LONG
-                                ).show()
-                            }
-                            // 立即向房间内已知设备发起 offer，不等待延迟 renegotiate
-                            manager.renegotiateAllPeers()
-                            rotationSensor?.let {
-                                sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
+                            binding.localPreview.post {
+                                try {
+                                    manager.ensureLocalPreviewReady()
+                                    if (!manager.startPublishing(segmentationEnabled)) {
+                                        binding.localPreview.visibility = View.GONE
+                                        binding.tvEmptyHint.visibility = View.VISIBLE
+                                        Toast.makeText(this, "无法打开摄像头，请检查权限", Toast.LENGTH_LONG).show()
+                                        return@post
+                                    }
+                                    isPublishing = true
+                                    binding.btnStartCast.text = "停止投屏"
+                                    if (!notifyPublishStarted()) {
+                                        Toast.makeText(
+                                            this,
+                                            "信令已断开，投屏状态可能未同步",
+                                            Toast.LENGTH_LONG
+                                        ).show()
+                                    }
+                                    manager.renegotiateAllPeers()
+                                    rotationSensor?.let {
+                                        sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
+                                    }
+                                } catch (e: Exception) {
+                                    isPublishing = false
+                                    webrtcManager?.stopPublishing()
+                                    binding.localPreview.visibility = View.GONE
+                                    binding.tvEmptyHint.visibility = View.VISIBLE
+                                    binding.btnStartCast.text = "开始投屏"
+                                    Toast.makeText(this, "投屏失败: ${e.message}", Toast.LENGTH_LONG).show()
+                                }
                             }
                         } catch (e: Exception) {
                             isPublishing = false

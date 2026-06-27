@@ -386,6 +386,15 @@ function App() {
           publisherId,
           Boolean(msg.payload.hasAlpha)
         );
+        setMappings((prev) => {
+          if (prev.some((m) => m.deviceId === publisherId && m.streamType === 'camera')) return prev;
+          const visibleCount = prev.filter((m) => m.visible).length;
+          return [
+            ...prev,
+            createDefaultMapping(publisherId, 'camera', visibleCount, visibleCount + 1),
+          ];
+        });
+        setViewMode('grid');
         webrtcRef.current?.noteAwaitingPublisher(publisherId, 'camera');
         break;
       }

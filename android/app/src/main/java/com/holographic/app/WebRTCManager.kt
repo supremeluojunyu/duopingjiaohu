@@ -90,6 +90,7 @@ class WebRTCManager(
         localRenderer.init(eglBase.eglBaseContext, null)
         localRenderer.setMirror(true)
         localRenderer.setEnableHardwareScaler(true)
+        localRenderer.setZOrderMediaOverlay(true)
         localRendererInitialized = true
     }
 
@@ -164,6 +165,15 @@ class WebRTCManager(
         if (peerId != localDeviceId) knownPeerIds.add(peerId)
     }
 
+    /** 本地预览 Surface 可见且完成 layout 后调用 */
+    fun ensureLocalPreviewReady() {
+        runOnMainThread {
+            if (!localRendererInitialized) {
+                initLocalRendererOnMainThread()
+            }
+        }
+    }
+
     fun startPublishing(enableSegmentation: Boolean): Boolean {
         if (isPublishing) return true
 
@@ -216,7 +226,10 @@ class WebRTCManager(
 
             val videoTrack = peerFactory.createVideoTrack("video0", source)
             localVideoTrack = videoTrack
+            videoTrack.setEnabled(true)
             videoTrack.addSink(localRenderer)
+            localRenderer.post { localRenderer.requestLayout() }
+            Log.i(TAG, "本地预览已绑定 videoTrack")
 
             val audioConstraints = MediaConstraints()
             val aSource = peerFactory.createAudioSource(audioConstraints)
@@ -519,6 +532,11 @@ class WebRTCManager(
             attachLocalTracks(pc)
             makingOffer.add(key)
 
+            val offerConstraints = MediaConstraints().apply {
+                mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", "false"))
+                mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "false"))
+            }
+
             pc.createOffer(object : SdpObserver {
                 override fun onCreateSuccess(offer: SessionDescription?) {
                     offer ?: return
@@ -547,7 +565,7 @@ class WebRTCManager(
                 override fun onSetFailure(error: String?) {
                     makingOffer.remove(key)
                 }
-            }, MediaConstraints())
+            }, offerConstraints)
         } catch (e: Exception) {
             makingOffer.remove(key)
             Log.e(TAG, "offerStreamToPeer 失败: $remoteId", e)

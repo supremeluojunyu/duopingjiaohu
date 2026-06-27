@@ -146,25 +146,20 @@ export class WebRTCManager {
     }
   }
 
-  /** 手机端开始投屏后会主动发 offer，电脑端预建接收并发送 subscribe 触发回连 */
+  /** 手机端开始投屏后会主动发 offer；电脑端只发 subscribe，等 offer 到达再建 PC */
   noteAwaitingPublisher(publisherId: string, streamType: StreamType = 'camera'): void {
     if (publisherId === this.localDeviceId) return;
     const key = `${publisherId}:${streamType}`;
-    let pc = this.peers.get(key);
+    const pc = this.peers.get(key);
     if (
-      !pc ||
-      pc.connectionState === 'failed' ||
-      pc.connectionState === 'closed' ||
-      pc.connectionState === 'disconnected'
+      pc &&
+      (pc.connectionState === 'failed' ||
+        pc.connectionState === 'closed' ||
+        pc.connectionState === 'disconnected')
     ) {
-      pc?.close();
+      pc.close();
       this.peers.delete(key);
       this.remoteStreams.delete(key);
-      pc = this.createPeerConnection(publisherId, streamType);
-      this.peers.set(key, pc);
-      this.ensureRecvTransceivers(pc);
-    } else {
-      this.ensureRecvTransceivers(pc);
     }
     const ok = this.signaling.send({
       type: 'subscribe',
@@ -314,13 +309,16 @@ export class WebRTCManager {
     };
 
     pc.ontrack = (event) => {
-      const stream = event.streams[0] ?? new MediaStream([event.track]);
+      const track = event.track;
+      track.enabled = true;
+      const stream = event.streams[0] ?? new MediaStream([track]);
       this.remoteStreams.set(key, {
         deviceId: remoteId,
         streamType,
         stream,
         hasAlpha: this.deviceAlpha.get(remoteId) ?? false,
       });
+      console.info('[WebRTC] ontrack', remoteId, track.kind, track.readyState);
       this.notifyStreams();
     };
 
@@ -352,21 +350,19 @@ export class WebRTCManager {
       case 'offer': {
         if (!msg.from) return;
         const key = `${msg.from}:${streamType}`;
+
+        // 作为订阅方应答：不在 setRemoteDescription 之前预建 recv transceiver，避免 m-line 错位
         let pc = this.peers.get(key);
-        if (!pc) {
-          pc = this.createPeerConnection(msg.from, streamType);
-          this.peers.set(key, pc);
-          this.ensureRecvTransceivers(pc);
-          if (this.localStream) {
-            this.attachLocalTracks(pc);
-          }
-        } else {
-          this.ensureRecvTransceivers(pc);
+        if (pc) {
+          pc.close();
+          this.peers.delete(key);
+          this.remoteStreams.delete(key);
         }
+        pc = this.createPeerConnection(msg.from, streamType);
+        this.peers.set(key, pc);
 
         const sdp = msg.payload.sdp as RTCSessionDescriptionInit;
 
-        // 处理 offer 冲突：对方发起 offer 时回滚本地 offer，作为应答方
         const offerCollision = this.makingOffer.has(key) || pc.signalingState !== 'stable';
         if (offerCollision) {
           let rollbackFailed = false;

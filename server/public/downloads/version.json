@@ -1,10 +1,10 @@
 {
-  "versionName": "0.1.8.8",
-  "versionCode": 14,
-  "fileName": "holographic-0.1.8.8.apk",
+  "versionName": "0.1.8.9",
+  "versionCode": 15,
+  "fileName": "holographic-0.1.8.9.apk",
   "fileSize": 0,
   "sha256": "",
-  "updatedAt": "2026-06-26T11:46:16.000Z",
+  "updatedAt": "2026-06-26T12:00:00.000Z",
   "available": true,
-  "releaseNotes": "修复手机投屏到 EXE 的信令/WebRTC 链路：subscribe 定向、publish_stopped、重连 PC 重置、去重 join、ICE 与 offer 竞态修复"
+  "releaseNotes": "修复投屏无画面：电脑端 SDP 应答协商、手机本地预览 Surface 初始化"
 }

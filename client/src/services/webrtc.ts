@@ -37,6 +37,8 @@ export class WebRTCManager {
   private iceRecoveryTimers = new Map<string, number>();
   /** ICE 直连失败后强制走 TURN relay */
   private relayOnlyPeers = new Set<string>();
+  /** 已成功 gather 到 relay 候选的 peer（openrelay 在国内常不可用，无 relay 时不切 relay-only） */
+  private relayReadyPeers = new Set<string>();
 
   private streamKey(remoteId: string, streamType: StreamType): string {
     return `${remoteId}:${streamType}`;
@@ -409,9 +411,57 @@ export class WebRTCManager {
 
   private enableRelayOnly(remoteId: string, reason: string): boolean {
     if (this.relayOnlyPeers.has(remoteId)) return false;
+    if (!this.relayReadyPeers.has(remoteId)) {
+      castLog(
+        'ice',
+        `跳过 relay-only ${remoteId.slice(0, 8)}`,
+        'warn',
+        `${reason}（未 gather 到 relay，保持 host 直连重试）`
+      );
+      return false;
+    }
     this.relayOnlyPeers.add(remoteId);
     castLog('ice', `切换 TURN relay-only ${remoteId.slice(0, 8)}`, 'warn', reason);
     return true;
+  }
+
+  private async logIceDiagnostics(pc: RTCPeerConnection, remoteId: string): Promise<void> {
+    try {
+      const report = await pc.getStats();
+      const counts = { host: 0, srflx: 0, relay: 0, mdns: 0, pairFailed: 0 };
+      report.forEach((stat) => {
+        if (stat.type === 'local-candidate' || stat.type === 'remote-candidate') {
+          const t = (stat as { candidateType?: string }).candidateType;
+          const addr = (stat as { address?: string }).address ?? '';
+          if (addr.includes('.local')) counts.mdns++;
+          if (t === 'host') counts.host++;
+          else if (t === 'srflx') counts.srflx++;
+          else if (t === 'relay') counts.relay++;
+        }
+        if (stat.type === 'candidate-pair' && (stat as { state?: string }).state === 'failed') {
+          counts.pairFailed++;
+        }
+      });
+      const detail = `host=${counts.host} srflx=${counts.srflx} relay=${counts.relay} mdns=${counts.mdns} 失败对=${counts.pairFailed}`;
+      castLog('ice', `ICE 诊断 ${remoteId.slice(0, 8)}`, 'warn', detail);
+      if (counts.mdns > 0 && counts.host === 0) {
+        castLog(
+          'ice',
+          '电脑使用了 mDNS(.local) 候选',
+          'err',
+          '请安装 v0.1.8.35+ 桌面 EXE，或 Chrome 关闭 WebRtcHideLocalIpsWithMdns'
+        );
+      } else if (counts.host > 0 && counts.relay === 0 && counts.pairFailed > 0) {
+        castLog(
+          'ice',
+          '热点 host 直连全部失败',
+          'warn',
+          '改用手机连 WiFi（勿电脑连热点），或启动 coturn'
+        );
+      }
+    } catch {
+      /* ignore */
+    }
   }
 
   private scheduleIceRecovery(streamKey: string, remoteId: string, streamType: StreamType, pc: RTCPeerConnection): void {
@@ -473,8 +523,16 @@ export class WebRTCManager {
     pc.onicecandidate = (event) => {
       if (!event.candidate) return;
       const type = event.candidate.type ?? 'unknown';
+      const addr = event.candidate.address ?? '';
       if (type === 'relay') {
+        this.relayReadyPeers.add(remoteId);
         castLog('ice', `本地 relay 候选 ${remoteId.slice(0, 8)}`, 'info');
+      } else if (type === 'host' || type === 'srflx') {
+        if (addr.includes('.local')) {
+          castLog('ice', `本地 mDNS 候选 ${remoteId.slice(0, 8)}`, 'warn', addr);
+        } else if (addr) {
+          castLog('ice', `本地 ${type} ${remoteId.slice(0, 8)}`, 'info', addr);
+        }
       }
       this.signaling.send({
         type: 'ice',
@@ -584,8 +642,9 @@ export class WebRTCManager {
                 'ice',
                 `${remoteId.slice(0, 8)} 长时间 checking`,
                 'warn',
-                sawRelay ? '已有 relay 候选' : '无 relay 候选，需启动 coturn'
+                sawRelay ? '已有 relay 候选' : '无 relay 候选'
               );
+              await this.logIceDiagnostics(pc, remoteId);
               if (!sawRelay && this.relayOnlyPeers.has(remoteId)) {
                 castLog(
                   'ice',
@@ -633,6 +692,11 @@ export class WebRTCManager {
           : '?';
     if (type === 'relay') {
       castLog('ice', '收到远端 relay 候选', 'info');
+    } else if (type === 'host' && candidate.includes('.local')) {
+      castLog('ice', '收到远端 mDNS 候选', 'warn');
+    } else if (type === 'host' || type === 'srflx') {
+      const ip = candidate.match(/\d+\.\d+\.\d+\.\d+/)?.[0];
+      if (ip) castLog('ice', `收到远端 ${type} ${ip}`, 'info');
     }
     return {
       candidate,
@@ -793,6 +857,7 @@ export class WebRTCManager {
     this.pendingRemoteMedia.clear();
     this.streamRevisions.clear();
     this.relayOnlyPeers.clear();
+    this.relayReadyPeers.clear();
   }
 }
 

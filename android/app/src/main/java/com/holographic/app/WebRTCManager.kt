@@ -911,8 +911,14 @@ class WebRTCManager(
                     else -> "unknown"
                 }
                 Log.d(TAG, "ICE 候选 ($candType): $remoteId")
-                if (candType == "relay") {
-                    castLog("ice", "发送 relay 候选 → ${remoteId.take(8)}")
+                when (candType) {
+                    "relay" -> castLog("ice", "发送 relay 候选 → ${remoteId.take(8)}")
+                    "host", "srflx" -> {
+                        val ip = Regex("""(\d+\.\d+\.\d+\.\d+)""").find(candidate.sdp)?.groupValues?.get(1)
+                        if (ip != null) {
+                            castLog("ice", "发送 $candType $ip → ${remoteId.take(8)}")
+                        }
+                    }
                 }
                 signaling.send(
                     "ice",

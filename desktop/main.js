@@ -2,6 +2,13 @@ const { app, BrowserWindow, screen, ipcMain, Menu } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
+/** 热点/LAN 投屏：Chrome 默认用 mDNS(.local) 隐藏本机 IP，Android 无法解析会导致 ICE 永远 checking */
+app.commandLine.appendSwitch('disable-features', 'WebRtcHideLocalIpsWithMdns');
+app.commandLine.appendSwitch(
+  'force-webrtc-ip-handling-policy',
+  'default_public_and_private_interfaces'
+);
+
 const isDev = !app.isPackaged;
 /** 打包版默认公网信令（frp 9000→本机9876）；开发时可设 HOLO_SIGNALING_URL 覆盖 */
 const DEFAULT_SIGNALING_URL = 'http://124.220.4.69:9000';

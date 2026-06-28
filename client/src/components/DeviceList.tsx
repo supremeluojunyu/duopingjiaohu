@@ -33,6 +33,7 @@ export function DeviceList({
             </span>
             <div>
               <div className="device-name">{device.name}</div>
+              <div className="device-id-hint">{device.id.slice(0, 8)}…</div>
               <div className="device-meta">
                 {device.role === 'admin' && <span className="badge admin">管理员</span>}
                 {device.hasAlpha && <span className="badge alpha">抠图</span>}

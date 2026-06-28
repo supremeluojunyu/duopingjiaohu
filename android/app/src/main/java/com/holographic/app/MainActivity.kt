@@ -270,6 +270,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
 
         if (isPublishing) {
             webrtcManager?.stopPublishing()
+            webrtcManager?.releaseLocalPreviewRenderer()
             isPublishing = false
             signalingClient?.send("publish_stopped", emptyMap())
             binding.btnStartCast.text = "开始投屏"
@@ -312,6 +313,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                                 }
                                 isPublishing = true
                                 binding.btnStartCast.text = "停止投屏"
+                                manager.refreshLocalPreview()
                                 if (!notifyPublishStarted()) {
                                     Toast.makeText(
                                         this,

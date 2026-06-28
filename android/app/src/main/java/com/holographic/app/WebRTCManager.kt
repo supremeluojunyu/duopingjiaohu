@@ -3,6 +3,7 @@ package com.holographic.app
 import android.content.Context
 import android.os.Looper
 import android.util.Log
+import android.view.SurfaceHolder
 import android.view.View
 import android.view.ViewTreeObserver
 import com.google.gson.JsonObject
@@ -111,6 +112,22 @@ class WebRTCManager(
         remoteRendererInitialized = true
     }
 
+    /** SurfaceView 从 GONE 恢复后必须 release 再 init，否则预览黑屏 */
+    fun releaseLocalPreviewRenderer() {
+        runOnMainThread {
+            localVideoTrack?.removeSink(localRenderer)
+            if (localRendererInitialized) {
+                try {
+                    localRenderer.release()
+                } catch (e: Exception) {
+                    Log.w(TAG, "释放本地渲染器失败: ${e.message}")
+                }
+                localRendererInitialized = false
+                Log.i(TAG, "本地渲染器已 release，等待下次绑定")
+            }
+        }
+    }
+
     private fun initLocalRendererOnMainThread() {
         if (localRendererInitialized) return
         localRenderer.init(eglBase.eglBaseContext, null)
@@ -122,26 +139,45 @@ class WebRTCManager(
         Log.i(TAG, "本地渲染器已 init (${localRenderer.width}x${localRenderer.height})")
     }
 
-    /** 仅在 Surface 有效尺寸时 init/addSink，避免 0x0 时 native 闪退；轮询 + layout 双保险 */
+    /** Surface 就绪后 init/addSink；轮询 + layout + SurfaceHolder 三保险 */
     private fun bindLocalPreviewWhenReady(videoTrack: VideoTrack) {
         runOnMainThread {
+            if (localRenderer.visibility != View.VISIBLE) {
+                localRenderer.visibility = View.VISIBLE
+            }
             var bound = false
             var layoutListener: ViewTreeObserver.OnGlobalLayoutListener? = null
+            var surfaceCallback: SurfaceHolder.Callback? = null
 
-            fun doBind(): Boolean {
-                if (bound) return true
-                if (localRenderer.width <= 0 || localRenderer.height <= 0) return false
-                initLocalRendererOnMainThread()
-                videoTrack.removeSink(localRenderer)
-                videoTrack.addSink(localRenderer)
-                localRenderer.requestLayout()
-                bound = true
+            fun cleanupListeners() {
                 layoutListener?.let { listener ->
                     if (localRenderer.viewTreeObserver.isAlive) {
                         localRenderer.viewTreeObserver.removeOnGlobalLayoutListener(listener)
                     }
                 }
-                Log.i(TAG, "本地预览已绑定 (${localRenderer.width}x${localRenderer.height})")
+                layoutListener = null
+                surfaceCallback?.let { cb ->
+                    try {
+                        localRenderer.holder.removeCallback(cb)
+                    } catch (_: Exception) {
+                    }
+                }
+                surfaceCallback = null
+            }
+
+            fun doBind(force: Boolean = false): Boolean {
+                if (bound) return true
+                if (!force && (localRenderer.width <= 0 || localRenderer.height <= 0)) return false
+                initLocalRendererOnMainThread()
+                videoTrack.removeSink(localRenderer)
+                videoTrack.addSink(localRenderer)
+                localRenderer.requestLayout()
+                bound = true
+                cleanupListeners()
+                Log.i(
+                    TAG,
+                    "本地预览已绑定 (${localRenderer.width}x${localRenderer.height}, force=$force)"
+                )
                 return true
             }
 
@@ -154,10 +190,11 @@ class WebRTCManager(
                     if (bound || localVideoTrack !== videoTrack) return
                     if (doBind()) return
                     attempts++
-                    if (attempts < 20) {
+                    if (attempts >= 5 && doBind(force = true)) return
+                    if (attempts < 30) {
                         mainHandler.postDelayed(this, 200)
-                    } else {
-                        Log.w(TAG, "本地预览轮询超时，等待 layout 回调")
+                    } else if (!doBind(force = true)) {
+                        Log.e(TAG, "本地预览绑定失败，Surface 可能未就绪")
                     }
                 }
             }
@@ -165,10 +202,25 @@ class WebRTCManager(
 
             layoutListener = object : ViewTreeObserver.OnGlobalLayoutListener {
                 override fun onGlobalLayout() {
-                    if (doBind()) return
+                    doBind()
                 }
             }
             localRenderer.viewTreeObserver.addOnGlobalLayoutListener(layoutListener)
+
+            surfaceCallback = object : SurfaceHolder.Callback {
+                override fun surfaceCreated(holder: SurfaceHolder) {
+                    doBind()
+                }
+
+                override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+                    if (width > 0 && height > 0) doBind()
+                }
+
+                override fun surfaceDestroyed(holder: SurfaceHolder) {
+                    releaseLocalPreviewRenderer()
+                }
+            }
+            localRenderer.holder.addCallback(surfaceCallback)
         }
     }
 
@@ -290,6 +342,10 @@ class WebRTCManager(
     private fun startPublishingInternal(enableSegmentation: Boolean): Boolean {
         if (isPublishing) return true
         return try {
+            if (factory == null) {
+                initializeFactory()
+                receiveReady = true
+            }
             val peerFactory = factory ?: run {
                 Log.e(TAG, "PeerConnectionFactory 未初始化")
                 return false
@@ -485,7 +541,7 @@ class WebRTCManager(
         }
 
         safeRelease("localTracks") {
-            localVideoTrack?.removeSink(localRenderer)
+            releaseLocalPreviewRenderer()
             localVideoTrack?.dispose()
             localVideoTrack = null
             localAudioTrack?.dispose()

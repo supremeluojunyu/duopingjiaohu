@@ -1,4 +1,5 @@
 import { StreamStats } from '../hooks/useWebRTCStats';
+import { DeviceInfo } from '../types';
 import { getLatencyLevel } from '../utils/latency';
 
 interface PerformancePanelProps {
@@ -6,6 +7,16 @@ interface PerformancePanelProps {
   latency: number;
   roomDeviceCount: number;
   qualityReduced: boolean;
+  devices?: DeviceInfo[];
+}
+
+function formatDeviceLabel(deviceId: string, devices?: DeviceInfo[]): string {
+  const match = devices?.find((d) => d.id === deviceId);
+  const idShort = deviceId.slice(0, 8);
+  if (match?.name && match.name !== deviceId) {
+    return `${match.name} (${idShort})`;
+  }
+  return idShort;
 }
 
 export function PerformancePanel({
@@ -13,6 +24,7 @@ export function PerformancePanel({
   latency,
   roomDeviceCount,
   qualityReduced,
+  devices,
 }: PerformancePanelProps) {
   return (
     <div className="perf-panel">
@@ -39,7 +51,7 @@ export function PerformancePanel({
           <tbody>
             {stats.map((s) => (
               <tr key={`${s.deviceId}:${s.streamType}`} className={s.packetsLost > 10 ? 'warn' : ''}>
-                <td>{s.deviceId.slice(0, 8)}</td>
+                <td title={s.deviceId}>{formatDeviceLabel(s.deviceId, devices)}</td>
                 <td>{s.bitrateKbps} kbps</td>
                 <td>{s.fps}</td>
                 <td>{s.resolution}</td>

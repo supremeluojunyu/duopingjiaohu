@@ -65,6 +65,15 @@ export class WebRTCManager {
     return this.peers;
   }
 
+  /** 仅返回订阅端 PC（用于性能监控 inbound 统计） */
+  getSubscriberPeerConnections(): Map<string, RTCPeerConnection> {
+    const result = new Map<string, RTCPeerConnection>();
+    for (const [key, pc] of this.peers) {
+      if (key.endsWith(':sub')) result.set(key, pc);
+    }
+    return result;
+  }
+
   async setQualityMode(low: boolean): Promise<void> {
     if (this.lowQualityMode === low || !this.localStream) return;
     this.lowQualityMode = low;
@@ -169,7 +178,13 @@ export class WebRTCManager {
     const subKey = this.subscriberPcKey(publisherId, streamType);
     const now = Date.now();
     const last = this.lastSubscribeSent.get(subKey) ?? 0;
-    if (attempt === 0 && now - last < 1500) {
+    const pc = this.peers.get(subKey);
+    if (
+      attempt === 0 &&
+      now - last < 1500 &&
+      pc &&
+      (this.isReceiving(pc) || this.isNegotiating(pc))
+    ) {
       console.log('[WebRTC] subscribe 去重跳过:', publisherId);
       return;
     }

@@ -563,6 +563,7 @@ button.active { background: var(--primary); border-color: var(--primary); }
 }
 .device-info { display: flex; align-items: center; gap: 0.5rem; }
 .device-name { font-size: 0.9rem; font-weight: 500; }
+.device-id-hint { font-size: 0.7rem; color: var(--text-muted); font-family: monospace; }
 .device-meta { font-size: 0.75rem; color: var(--text-muted); display: flex; gap: 0.25rem; }
 .badge {
   font-size: 0.65rem;

@@ -262,7 +262,7 @@ function App() {
   );
 
   const getPeers = useCallback(
-    () => webrtcRef.current?.getPeerConnections() ?? null,
+    () => webrtcRef.current?.getSubscriberPeerConnections() ?? null,
     []
   );
   const { stats: streamStats, qualityReduced } = useWebRTCStats(getPeers);
@@ -912,6 +912,7 @@ function App() {
             latency={latency}
             roomDeviceCount={devices.length}
             qualityReduced={qualityReduced}
+            devices={devices}
           />
           <div className="thumbnails">
             <h3>画面缩略图</h3>

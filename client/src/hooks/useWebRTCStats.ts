@@ -18,6 +18,17 @@ interface QualityState {
   qualityReduced: boolean;
 }
 
+/** 解析 peer key：`{uuid}:camera:sub` → deviceId + streamType */
+export function parseSubscriberPeerKey(key: string): { deviceId: string; streamType: string } {
+  const base = key.replace(/:(sub|pub)$/, '');
+  const lastColon = base.lastIndexOf(':');
+  if (lastColon <= 0) return { deviceId: base, streamType: 'camera' };
+  return {
+    deviceId: base.slice(0, lastColon),
+    streamType: base.slice(lastColon + 1),
+  };
+}
+
 function evaluateQualityReduced(stats: StreamStats[], state: QualityState): boolean {
   if (stats.length === 0) return state.qualityReduced;
 
@@ -69,6 +80,9 @@ export function useWebRTCStats(
       const dt = (now - prevTime) / 1000;
 
       for (const [key, pc] of peers) {
+        if (!key.endsWith(':sub')) continue;
+        if (pc.connectionState === 'closed') continue;
+
         try {
           const report = await pc.getStats();
           let bitrateKbps = 0;
@@ -105,10 +119,10 @@ export function useWebRTCStats(
             }
           });
 
-          const [deviceId, streamType] = key.split(':');
+          const { deviceId, streamType } = parseSubscriberPeerKey(key);
           results.push({
             deviceId,
-            streamType: streamType ?? 'camera',
+            streamType,
             bitrateKbps: Math.round(bitrateKbps),
             fps: Math.round(fps),
             packetsLost,

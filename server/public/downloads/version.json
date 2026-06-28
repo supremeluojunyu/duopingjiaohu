@@ -1,10 +1,10 @@
 {
-  "versionName": "0.1.8.29",
-  "versionCode": 35,
-  "fileName": "holographic-0.1.8.29.apk",
+  "versionName": "0.1.8.30",
+  "versionCode": 36,
+  "fileName": "holographic-0.1.8.30.apk",
   "fileSize": 98745650,
-  "sha256": "757fa3f71c524bf0546606baa6f82a11695e2d822f09509b266c94f64e60f5c9",
-  "updatedAt": "2026-06-28T05:39:37.000Z",
+  "sha256": "5c6638c8a4c5cdb779e2e8f62f8b89c1ce68aaa519d6746063c29bb5574490d5",
+  "updatedAt": "2026-06-28T06:50:53.000Z",
   "available": true,
-  "releaseNotes": "v0.1.8.29 修复投屏：subscribe去重/协商不reset/信令地址统一/Android重连补offer"
+  "releaseNotes": "v0.1.8.30 修复本地预览黑屏与性能监控设备ID"
 }

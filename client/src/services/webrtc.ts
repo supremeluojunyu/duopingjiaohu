@@ -43,6 +43,9 @@ export class WebRTCManager {
   private remoteSubnetByPeer = new Map<string, string>();
   /** 远端已成功 gather relay（手机 TURN 可用） */
   private remoteRelaySeen = new Set<string>();
+  /** 本机 host 网段（/24），用于检测 172.26.74 vs 172.26.153 等跨子网 */
+  private localHostPrefixes = new Set<string>();
+  private relayRetryTimers = new Map<string, number>();
 
   private streamKey(remoteId: string, streamType: StreamType): string {
     return `${remoteId}:${streamType}`;
@@ -429,10 +432,14 @@ export class WebRTCManager {
     return true;
   }
 
-  /** 8s 后若手机有 relay 但电脑无，强制 relay-only 重连 */
+  /** 8s 后若 ICE 仍未连通：无本地 relay 则重试；双方已有 relay 则强制 relay-only */
   private scheduleRelayFallback(remoteId: string, streamType: StreamType, pc: RTCPeerConnection): void {
-    window.setTimeout(async () => {
-      if (this.peers.get(this.subscriberPcKey(remoteId, streamType)) !== pc) return;
+    const subKey = this.subscriberPcKey(remoteId, streamType);
+    const existing = this.relayRetryTimers.get(subKey);
+    if (existing) clearTimeout(existing);
+    const timer = window.setTimeout(async () => {
+      this.relayRetryTimers.delete(subKey);
+      if (this.peers.get(subKey) !== pc) return;
       if (!this.remoteRelaySeen.has(remoteId) || this.relayOnlyPeers.has(remoteId)) return;
       const ice = pc.iceConnectionState;
       if (ice === 'connected' || ice === 'completed') return;
@@ -450,12 +457,56 @@ export class WebRTCManager {
       } catch {
         /* ignore */
       }
-      if (localRelay) return;
+      if (localRelay) {
+        castLog(
+          'ice',
+          '双方有 TURN 仍未连通',
+          'err',
+          '腾讯云需放行 UDP 49152-65535；将切换 relay-only 重试'
+        );
+        this.enableRelayOnly(remoteId, 'relay gather 完成但 ICE 未连通');
+        this.closeSubscriberPc(remoteId, streamType);
+        this.requestMobileStream(remoteId, streamType, true);
+        return;
+      }
       castLog('ice', '电脑未获取 TURN，relay-only 重试', 'warn', '124.220.4.69:3478');
       this.relayOnlyPeers.add(remoteId);
       this.closeSubscriberPc(remoteId, streamType);
       this.requestMobileStream(remoteId, streamType, true);
     }, 8000);
+    this.relayRetryTimers.set(subKey, timer);
+  }
+
+  private maybeForceRelayOnSubnetMismatch(
+    remoteId: string,
+    streamType: StreamType,
+    remoteIp: string
+  ): void {
+    const remotePrefix = this.ipPrefix(remoteIp);
+    const localPrefixes = [...this.localHostPrefixes];
+    if (localPrefixes.length === 0) return;
+    if (localPrefixes.some((p) => p === remotePrefix)) return;
+    if (!this.relayReadyPeers.has(remoteId) && !this.remoteRelaySeen.has(remoteId)) return;
+    if (this.relayOnlyPeers.has(remoteId)) return;
+    const subKey = this.subscriberPcKey(remoteId, streamType);
+    const pc = this.peers.get(subKey);
+    if (
+      pc &&
+      (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed')
+    ) {
+      return;
+    }
+    castLog(
+      'ice',
+      '网段不一致',
+      'err',
+      `PC=[${localPrefixes.join(',')}] 手机=${remotePrefix}.x，切换 relay-only`
+    );
+    this.enableRelayOnly(remoteId, `子网不一致 ${remotePrefix}`);
+    if (pc && pc.connectionState !== 'closed') {
+      this.closeSubscriberPc(remoteId, streamType);
+      this.requestMobileStream(remoteId, streamType, true);
+    }
   }
 
   private async logIceDiagnostics(pc: RTCPeerConnection, remoteId: string): Promise<void> {
@@ -496,15 +547,14 @@ export class WebRTCManager {
           .map((ip) => ip.split('.').slice(0, 3).join('.'));
         const remotePrefix = remoteIp.split('.').slice(0, 3).join('.');
         const hasMatch = localPrefixes.some((p) => p === remotePrefix);
-        const has172Match =
-          remoteIp.startsWith('172.26.') &&
-          localPrefixes.some((p) => p.startsWith('172.26.'));
-        if (!hasMatch && !has172Match) {
+        if (!hasMatch) {
           castLog(
             'ice',
             `网段不一致 PC=[${localPrefixes.join(',')}] 手机=${remoteIp}`,
             'err',
-            'PC 多网卡干扰：关闭虚拟网卡/VPN 或启动 coturn'
+            localPrefixes.some((p) => p.startsWith('172.26.')) && remoteIp.startsWith('172.26.')
+              ? '172.26 不同子网 host UDP 不通，需 TURN relay-only'
+              : 'PC 多网卡干扰：关闭虚拟网卡/VPN 或启动 coturn'
           );
         }
       }
@@ -549,6 +599,24 @@ export class WebRTCManager {
           '172.26 host 无法互通',
           'err',
           '172.26.74与153.x不同子网，请在服务器运行 enable-coturn.sh'
+        );
+      }
+      if (counts.relay > 0 && counts.pairFailed > 0) {
+        castLog(
+          'ice',
+          'TURN relay 配对失败',
+          'err',
+          '3478 已通但中继端口 UDP 49152-65535 可能被拦截'
+        );
+      } else if (
+        counts.relay > 0 &&
+        (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected')
+      ) {
+        castLog(
+          'ice',
+          '双方有 relay 但 ICE 未连通',
+          'err',
+          '请放行 124.220.4.69 UDP 49152-65535，并安装 v0.1.8.44+'
         );
       }
     } catch {
@@ -628,6 +696,7 @@ export class WebRTCManager {
         if (addr.includes('.local')) {
           castLog('ice', `本地 mDNS ${remoteId.slice(0, 8)}`, 'warn', addr);
         } else if (addr) {
+          if (type === 'host') this.localHostPrefixes.add(this.ipPrefix(addr));
           castLog('ice', `本地 ${type} ${addr}`, 'info');
         }
       }
@@ -786,25 +855,21 @@ export class WebRTCManager {
     return ip.split('.').slice(0, 3).join('.');
   }
 
-  private noteRemoteSubnet(remoteId: string, ip: string): void {
+  private noteRemoteSubnet(remoteId: string, ip: string, streamType: StreamType): void {
     if (!this.remoteSubnetByPeer.has(remoteId)) {
       this.remoteSubnetByPeer.set(remoteId, this.ipPrefix(ip));
     }
+    this.maybeForceRelayOnSubnetMismatch(remoteId, streamType, ip);
   }
 
-  /** 过滤 Hyper-V/虚拟网卡 .1 地址；已知远端网段时只发同网段候选 */
+  /** 过滤 Hyper-V/虚拟网卡 .1 地址；已知远端网段时只发同 /24 候选 */
   private shouldSendLocalCandidate(remoteId: string, ip: string): boolean {
     if (ip.endsWith('.1') && (ip.startsWith('192.168.128.') || ip.startsWith('192.168.178.'))) {
       return false;
     }
     const remotePrefix = this.remoteSubnetByPeer.get(remoteId);
     if (!remotePrefix) return true;
-    const localPrefix = this.ipPrefix(ip);
-    if (localPrefix === remotePrefix) return true;
-    const [ra, rb] = remotePrefix.split('.').map(Number);
-    const [la, lb] = localPrefix.split('.').map(Number);
-    if (ra === la && rb === lb && (ra === 10 || ra === 172 || ra === 192)) return true;
-    return false;
+    return this.ipPrefix(ip) === remotePrefix;
   }
 
   private isUsableIceCandidate(candidate: string): boolean {
@@ -949,7 +1014,7 @@ export class WebRTCManager {
         if (!candidate) return;
         const hostIp = candidate.candidate?.match(/(\d+\.\d+\.\d+\.\d+)/)?.[1];
         if (hostIp && candidate.candidate?.includes('typ host')) {
-          this.noteRemoteSubnet(msg.from, hostIp);
+          this.noteRemoteSubnet(msg.from, hostIp, streamType);
         }
         if (candidate.candidate?.includes('typ relay')) {
           this.remoteRelaySeen.add(msg.from);
@@ -1010,6 +1075,9 @@ export class WebRTCManager {
     this.relayOnlyPeers.clear();
     this.relayReadyPeers.clear();
     this.remoteRelaySeen.clear();
+    this.localHostPrefixes.clear();
+    this.relayRetryTimers.forEach((t) => clearTimeout(t));
+    this.relayRetryTimers.clear();
   }
 }
 

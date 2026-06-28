@@ -143,8 +143,14 @@ export function castDiagnosisHint(): string | null {
     if (recent.some((e) => e.message.includes('热点 host 直连全部失败'))) {
       return '手机热点 UDP 不通：改用手机连 WiFi，或启动 coturn 走中继';
     }
+    if (recent.some((e) => e.message.includes('双方有 TURN') || e.message.includes('双方有 relay'))) {
+      return 'TURN 3478 已通但中继失败：腾讯云安全组放行 UDP 49152-65535，并更新 v0.1.8.44';
+    }
+    if (recent.some((e) => e.message.includes('网段不一致') && e.detail?.includes('relay-only'))) {
+      return '172.26 不同子网：已自动切换 relay-only，若仍失败请放行 UDP 49152-65535';
+    }
     if (has('ice', 'relay-only') || has('ice', '无 TURN')) {
-      return '已切换 relay-only 但仍未连通：请在 124.220.4.69 启动 coturn 并放行 UDP 3478';
+      return '已切换 relay-only 但仍未连通：放行 UDP 3478 + 49152-65535（coturn 中继端口）';
     }
     if (!hasRelayCandidate(recent) && hasIceDiagnostics(recent)) {
       return 'host 直连失败且无 TURN：请启动 coturn（scripts/enable-coturn.sh）';
@@ -152,7 +158,16 @@ export function castDiagnosisHint(): string | null {
     if (!hasRelayCandidate(recent)) {
       return 'ICE 未连通且无 relay：跨网需 coturn；同网请换 WiFi 拓扑';
     }
-    return 'SDP 已协商但 ICE 未连通：检查 NAT/防火墙，建议同一 WiFi';
+    return 'SDP 已协商但 ICE 未连通：若已有 relay 请检查服务器 UDP 49152-65535';
+  }
+
+  if (!iceOk && recent.some((e) => e.message.includes(': failed') || e.message.includes('conn=failed'))) {
+    if (recent.some((e) => e.message.includes('双方有 TURN') || e.message.includes('已有 relay'))) {
+      return 'TURN 已分配但 ICE failed：腾讯云安全组需放行 UDP 49152-65535';
+    }
+    if (hasRelayCandidate(recent)) {
+      return '有 relay 候选但 ICE failed：放行 UDP 49152-65535 或更新 v0.1.8.44';
+    }
   }
 
   const iceWarn = recent.find(

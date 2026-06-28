@@ -11,8 +11,8 @@ android {
         applicationId = "com.holographic.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 49
-        versionName = "0.1.8.43"
+        versionCode = 50
+        versionName = "0.1.8.44"
     }
 
     buildTypes {

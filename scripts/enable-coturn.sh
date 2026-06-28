@@ -8,8 +8,10 @@ PUBLIC_IP="${PUBLIC_IP:-124.220.4.69}"
 
 echo "==> 启动 coturn (PUBLIC_IP=$PUBLIC_IP)"
 echo "    腾讯云安全组 + 防火墙需放行:"
-echo "      TCP/UDP 3478"
-echo "      UDP 49152-65535"
+echo "      TCP/UDP 3478          ← TURN 分配"
+echo "      UDP 49152-65535       ← 中继媒体（缺此项会导致「有 relay 但 ICE failed」）"
+echo ""
+echo "    验证: bash scripts/test-turn.sh"
 
 export PUBLIC_IP
 docker compose --profile turn up -d coturn

@@ -79,6 +79,11 @@ class WebRTCManager(
     private val relayOnlyPeers = CopyOnWriteArraySet<String>()
     /** 已成功 gather relay 候选（无 relay 时不切 relay-only，避免国内 openrelay 不可用） */
     private val relayReadyPeers = CopyOnWriteArraySet<String>()
+    /** 远端已成功 gather relay */
+    private val remoteRelaySeen = CopyOnWriteArraySet<String>()
+    private val remoteSubnetByPeer = mutableMapOf<String, String>()
+    private val localHostPrefixes = CopyOnWriteArraySet<String>()
+    private val recoveringPeers = mutableSetOf<String>()
     private val lastIceRecoveryMs = mutableMapOf<String, Long>()
     private val iceRecoveryCounts = mutableMapOf<String, Int>()
     private val lastIceConnectedMs = mutableMapOf<String, Long>()
@@ -728,13 +733,14 @@ class WebRTCManager(
         pendingOfferRetries.remove(key)?.let { mainHandler.removeCallbacks(it) }
         makingOffer.remove(key)
         pendingIce.remove(key)
-        peerConnections.remove(key)?.let { pc ->
+        val pc = peerConnections.remove(key) ?: return
+        mainHandler.postDelayed({
             try {
                 pc.close()
             } catch (e: Exception) {
                 Log.w(TAG, "关闭 PeerConnection 失败: ${e.message}")
             }
-        }
+        }, 300)
     }
 
     /** PeerConnection 必须在创建线程（主线程）关闭，否则 ICE 回调线程 close 会 native 闪退 */
@@ -750,6 +756,7 @@ class WebRTCManager(
         mainHandler.post {
             if (!isPublishing) return@post
             val key = peerKey(remoteId)
+            if (recoveringPeers.contains(key)) return@post
             val recentlyConnected =
                 System.currentTimeMillis() - (lastIceConnectedMs[key] ?: 0L) < 20_000L
             if (reason == "disconnected" && recentlyConnected) {
@@ -765,17 +772,62 @@ class WebRTCManager(
             }
             iceRecoveryCounts[key] = count
             lastIceRecoveryMs[key] = now
-            if (relayReadyPeers.contains(remoteId)) {
-                enableRelayOnly(remoteId, reason)
-            } else {
-                castWarn("ice", "跳过 relay-only ${remoteId.take(8)} ($reason)")
-            }
-            resetPublisherPeerConnectionOnMain(remoteId)
+            recoveringPeers.add(key)
+            val delayMs = if (reason == "failed") 1500L else 0L
             mainHandler.postDelayed({
-                if (!isPublishing || !activeSubscribers.contains(remoteId)) return@postDelayed
-                offerStreamToPeer(remoteId, respondToSubscribe = true)
-            }, 1200L)
+                if (!isPublishing) {
+                    recoveringPeers.remove(key)
+                    return@postDelayed
+                }
+                if (relayReadyPeers.contains(remoteId) || remoteRelaySeen.contains(remoteId)) {
+                    enableRelayOnly(remoteId, reason)
+                } else {
+                    castWarn("ice", "跳过 relay-only ${remoteId.take(8)} ($reason)")
+                }
+                resetPublisherPeerConnectionOnMain(remoteId)
+                mainHandler.postDelayed({
+                    recoveringPeers.remove(key)
+                    if (!isPublishing || !activeSubscribers.contains(remoteId)) return@postDelayed
+                    try {
+                        offerStreamToPeer(remoteId, respondToSubscribe = true)
+                    } catch (e: Exception) {
+                        castError("ice", "恢复 offer 失败 ${remoteId.take(8)}: ${e.message}")
+                    }
+                }, 1200L)
+            }, delayMs)
         }
+    }
+
+    private fun ipPrefix(ip: String): String =
+        ip.split('.').take(3).joinToString(".")
+
+    private fun noteRemoteSubnet(remoteId: String, ip: String) {
+        if (!remoteSubnetByPeer.containsKey(remoteId)) {
+            remoteSubnetByPeer[remoteId] = ipPrefix(ip)
+        }
+        maybeForceRelayOnSubnetMismatch(remoteId, ip)
+    }
+
+    private fun maybeForceRelayOnSubnetMismatch(remoteId: String, remoteIp: String) {
+        val remotePrefix = ipPrefix(remoteIp)
+        if (localHostPrefixes.any { it == remotePrefix }) return
+        if (!relayReadyPeers.contains(remoteId) && !remoteRelaySeen.contains(remoteId)) return
+        if (relayOnlyPeers.contains(remoteId)) return
+        val key = peerKey(remoteId)
+        val pc = peerConnections[key]
+        if (pc != null) {
+            val ice = pc.iceConnectionState()
+            if (ice == PeerConnection.IceConnectionState.CONNECTED ||
+                ice == PeerConnection.IceConnectionState.COMPLETED
+            ) {
+                return
+            }
+        }
+        castError(
+            "ice",
+            "网段不一致 PC=[${localHostPrefixes.joinToString()}] 手机=$remotePrefix.x，切换 relay-only"
+        )
+        enableRelayOnly(remoteId, "子网不一致")
     }
 
     private fun isCastConnected(pc: PeerConnection): Boolean {
@@ -992,7 +1044,7 @@ class WebRTCManager(
     }
 
     private fun enableRelayOnly(remoteId: String, reason: String) {
-        if (!relayReadyPeers.contains(remoteId)) {
+        if (!relayReadyPeers.contains(remoteId) && !remoteRelaySeen.contains(remoteId)) {
             castWarn("ice", "跳过 relay-only ${remoteId.take(8)} ($reason)")
             return
         }
@@ -1053,6 +1105,7 @@ class WebRTCManager(
                     "host", "srflx" -> {
                         val ip = Regex("""(\d+\.\d+\.\d+\.\d+)""").find(candidate.sdp)?.groupValues?.get(1)
                         if (ip != null) {
+                            if (candType == "host") localHostPrefixes.add(ipPrefix(ip))
                             castLog("ice", "发送 $candType $ip → ${remoteId.take(8)}")
                         }
                     }
@@ -1259,6 +1312,14 @@ class WebRTCManager(
         val key = peerKey(from)
         val candidateObj = msg.payload?.getAsJsonObject("candidate") ?: return
         val candidate = parseIceCandidate(candidateObj) ?: return
+        val candStr = candidate.sdp
+        if (candStr.contains("typ relay")) {
+            remoteRelaySeen.add(from)
+        } else if (candStr.contains("typ host")) {
+            Regex("""(\d+\.\d+\.\d+\.\d+)""").find(candStr)?.groupValues?.get(1)?.let { ip ->
+                noteRemoteSubnet(from, ip)
+            }
+        }
         val pc = peerConnections[key]
         if (pc != null && pc.remoteDescription != null) {
             pc.addIceCandidate(candidate)

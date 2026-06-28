@@ -1,6 +1,7 @@
 import { SignalingClient } from './signaling';
 import { getCachedIceServers } from './ice';
 import { createSegmentedStream } from './segmentation';
+import { castLog } from '../utils/castLog';
 import { RemoteStream, StreamType } from '../types';
 
 const LOW_QUALITY_VIDEO: MediaTrackConstraints = { width: 640, height: 480, frameRate: 20 };
@@ -185,7 +186,7 @@ export class WebRTCManager {
       pc &&
       (this.isReceiving(pc) || this.isNegotiating(pc))
     ) {
-      console.log('[WebRTC] subscribe 去重跳过:', publisherId);
+      castLog('subscribe', `去重跳过 ${publisherId.slice(0, 8)}`, 'info');
       return;
     }
 
@@ -201,11 +202,11 @@ export class WebRTCManager {
 
     if (ok) {
       this.lastSubscribeSent.set(subKey, now);
-      console.log('[WebRTC] subscribe 已发送:', publisherId);
+      castLog('subscribe', `已发送 → ${publisherId.slice(0, 8)}`, 'ok', `subscriber=${this.localDeviceId.slice(0, 8)}`);
       return;
     }
 
-    console.warn('[WebRTC] subscribe 发送失败:', publisherId, 'attempt', attempt);
+    castLog('subscribe', `发送失败 ${publisherId.slice(0, 8)}`, attempt < 3 ? 'warn' : 'err', `attempt=${attempt}`);
     if (attempt < 3) {
       window.setTimeout(() => this.sendSubscribe(publisherId, streamType, attempt + 1), 500 * (attempt + 1));
     }
@@ -378,7 +379,12 @@ export class WebRTCManager {
             stream,
             hasAlpha: this.deviceAlpha.get(remoteId) ?? false,
           });
-          console.info('[WebRTC] 收到手机画面:', remoteId, 'tracks:', stream.getVideoTracks().length);
+          castLog(
+            'ontrack',
+            `收到画面 ${remoteId.slice(0, 8)}`,
+            'ok',
+            `tracks=${stream.getVideoTracks().length}`
+          );
           this.notifyStreams();
         };
 
@@ -387,11 +393,15 @@ export class WebRTCManager {
       };
 
       pc.onconnectionstatechange = () => {
-        console.info('[WebRTC] connection:', remoteId, pc.connectionState);
+        castLog('ice', `connection ${remoteId.slice(0, 8)}: ${pc.connectionState}`, 'info');
         if (pc.connectionState === 'connected' && !this.remoteStreams.has(streamKey)) {
           const watchdog = setTimeout(() => {
             if (this.peers.get(subKey) !== pc || this.remoteStreams.has(streamKey)) return;
-            console.warn('[WebRTC] 连接成功但 8s 内无画面，重新 subscribe:', remoteId);
+            castLog(
+              'ontrack',
+              `8s 内无画面，重试 subscribe ${remoteId.slice(0, 8)}`,
+              'warn'
+            );
             this.closeSubscriberPc(remoteId, streamType);
             this.requestMobileStream(remoteId, streamType);
           }, 8000);
@@ -400,9 +410,36 @@ export class WebRTCManager {
       };
 
       pc.oniceconnectionstatechange = () => {
-        console.info('[WebRTC] ice:', remoteId, pc.iceConnectionState);
-        if (pc.iceConnectionState === 'failed') {
-          console.warn('[WebRTC] ICE 失败，重新 subscribe:', remoteId);
+        const ice = pc.iceConnectionState;
+        const level =
+          ice === 'connected' || ice === 'completed'
+            ? 'ok'
+            : ice === 'failed'
+              ? 'err'
+              : ice === 'checking'
+                ? 'warn'
+                : 'info';
+        castLog('ice', `${remoteId.slice(0, 8)}: ${ice}`, level);
+        if (ice === 'checking') {
+          const iceKey = subKey;
+          window.setTimeout(() => {
+            const current = this.peers.get(iceKey);
+            if (!current || current !== pc) return;
+            if (
+              current.iceConnectionState === 'checking' ||
+              current.iceConnectionState === 'new'
+            ) {
+              castLog(
+                'ice',
+                `${remoteId.slice(0, 8)} 长时间 checking`,
+                'warn',
+                '检查 STUN/网络，建议同一 WiFi'
+              );
+            }
+          }, 15000);
+        }
+        if (ice === 'failed') {
+          castLog('ice', `ICE 失败，重试 ${remoteId.slice(0, 8)}`, 'err');
           this.closeSubscriberPc(remoteId, streamType);
           this.requestMobileStream(remoteId, streamType);
         }
@@ -460,7 +497,7 @@ export class WebRTCManager {
         if (!msg.from) return;
         const subKey = this.subscriberPcKey(msg.from, streamType);
         const sdp = msg.payload.sdp as RTCSessionDescriptionInit;
-        console.log('[WebRTC] 收到手机 offer:', msg.from);
+        castLog('offer', `收到 ← ${msg.from.slice(0, 8)}`, 'ok');
 
         let pc = this.peers.get(subKey);
         const needsFreshPc =
@@ -476,6 +513,11 @@ export class WebRTCManager {
         try {
           await activePc.setRemoteDescription(new RTCSessionDescription(sdp));
           this.ensureRecvOnlyTransceivers(activePc);
+          const txInfo = activePc
+            .getTransceivers()
+            .map((t) => `${t.mid}:${t.direction}:${t.receiver.track?.kind ?? '?'}`)
+            .join(', ');
+          castLog('offer', `transceivers ${msg.from.slice(0, 8)}`, 'info', txInfo || 'none');
           const answer = await activePc.createAnswer();
           await activePc.setLocalDescription(answer);
           await this.drainPendingIce(subKey, activePc);
@@ -484,9 +526,14 @@ export class WebRTCManager {
             to: msg.from,
             payload: { sdp: answer, streamType, targetId: msg.from },
           });
-          console.log('[WebRTC] answer 已发送:', msg.from, 'signaling:', activePc.signalingState);
+          castLog(
+            'answer',
+            `已发送 → ${msg.from.slice(0, 8)}`,
+            'ok',
+            `signaling=${activePc.signalingState}`
+          );
         } catch (err) {
-          console.error('[WebRTC] 处理 offer 失败:', err);
+          castLog('offer', `处理失败 ${msg.from.slice(0, 8)}`, 'err', String(err));
           this.closeSubscriberPc(msg.from, streamType);
         }
         break;

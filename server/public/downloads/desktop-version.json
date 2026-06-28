@@ -1,7 +1,7 @@
 {
-  "versionName": "0.1.8.30",
-  "fileName": "HolographicSystem-Portable-0.1.8-30.exe",
+  "versionName": "0.1.8.31",
+  "fileName": "HolographicSystem-Portable-0.1.8-31.exe",
   "downloadUrl": "/downloads/app-latest.exe",
   "sha256": "",
-  "releaseNotes": "v0.1.8.30 cast fix"
+  "releaseNotes": "v0.1.8.31 cast diagnostics"
 }

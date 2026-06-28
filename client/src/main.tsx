@@ -4,6 +4,7 @@ import { AdminPanel } from './components/AdminPanel';
 import { AngleGuideOverlay } from './components/AngleGuideOverlay';
 import { DeviceList } from './components/DeviceList';
 import { PerformancePanel } from './components/PerformancePanel';
+import { CastDiagnosticsPanel } from './components/CastDiagnosticsPanel';
 import { RoomQr } from './components/RoomQr';
 import { ApkDownloadPage } from './components/ApkDownloadPage';
 import { ConnectionStatus, ConnectionVisualState } from './components/ConnectionStatus';
@@ -21,6 +22,7 @@ import {
   StreamMapping,
   StreamType,
 } from './types';
+import { castLog } from './utils/castLog';
 import './styles.css';
 
 const DEFAULT_SERVER = DEFAULT_SIGNALING_URL;
@@ -238,6 +240,12 @@ function App() {
         setViewMode('grid');
       }
       for (const p of relevant) {
+        castLog(
+          'publish_started',
+          `触发 subscribe ${p.deviceId.slice(0, 8)}`,
+          webrtcRef.current ? 'ok' : 'warn',
+          webrtcRef.current ? 'webrtc 就绪' : 'webrtc 未就绪，已排队'
+        );
         setPublishingDevices((prev) => new Set(prev).add(p.deviceId));
         setSubscribed((prev) => new Set(prev).add(p.deviceId));
         if (webrtcRef.current) {
@@ -420,6 +428,12 @@ function App() {
       case 'publish_started': {
         const publisherId = msg.payload.deviceId as string;
         if (publisherId === localDeviceIdRef.current) break;
+        castLog(
+          'publish_started',
+          `收到 ← ${publisherId.slice(0, 8)}`,
+          'ok',
+          `hasAlpha=${Boolean(msg.payload.hasAlpha)}`
+        );
         applyPublisherSync([
           { deviceId: publisherId, hasAlpha: Boolean(msg.payload.hasAlpha) },
         ]);
@@ -914,6 +928,7 @@ function App() {
             qualityReduced={qualityReduced}
             devices={devices}
           />
+          <CastDiagnosticsPanel />
           <div className="thumbnails">
             <h3>画面缩略图</h3>
             {[...remoteStreams.values()].map((rs) => (

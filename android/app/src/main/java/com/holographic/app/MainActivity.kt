@@ -256,8 +256,11 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         val payload = mapOf("hasAlpha" to segmentationEnabled)
         val started = signalingClient?.send("publish_started", payload) == true
         if (started) {
+            android.util.Log.i("MainActivity", "[cast:publish_started] 已发送 deviceId=${localDeviceId?.take(8)}")
             // device_update 失败不影响 EXE 收到 publish_started
             signalingClient?.send("device_update", payload)
+        } else {
+            android.util.Log.e("MainActivity", "[cast:publish_started] 发送失败，信令可能已断开")
         }
         return started
     }
@@ -279,6 +282,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             sensorManager?.unregisterListener(this)
         } else {
             if (!PermissionsHelper.allGranted(this)) {
+                android.util.Log.w("MainActivity", "[cast:preview] 摄像头/麦克风权限未授予")
                 Toast.makeText(this, "需要摄像头和麦克风权限", Toast.LENGTH_LONG).show()
                 requestPermissionsIfNeeded()
                 return

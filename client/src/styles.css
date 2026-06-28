@@ -724,6 +724,61 @@ button.active { background: var(--primary); border-color: var(--primary); }
 }
 .perf-table tr.warn td { color: var(--danger); }
 
+.cast-diag-panel {
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border);
+}
+.cast-diag-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.35rem;
+}
+.cast-diag-header h3 {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin: 0;
+}
+.cast-diag-clear {
+  font-size: 0.65rem;
+  padding: 0.15rem 0.4rem;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+}
+.cast-diag-hint {
+  font-size: 0.72rem;
+  color: var(--warning, #f59e0b);
+  margin: 0 0 0.4rem;
+  line-height: 1.35;
+}
+.cast-diag-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 140px;
+  overflow-y: auto;
+}
+.cast-diag-item {
+  display: flex;
+  gap: 0.35rem;
+  font-size: 0.68rem;
+  padding: 0.2rem 0;
+  border-bottom: 1px solid var(--border);
+  line-height: 1.3;
+}
+.cast-diag-item.err .cast-diag-msg { color: var(--danger); }
+.cast-diag-item.warn .cast-diag-msg { color: var(--warning, #f59e0b); }
+.cast-diag-item.ok .cast-diag-msg { color: var(--success); }
+.cast-diag-time { color: var(--text-muted); flex-shrink: 0; font-family: monospace; }
+.cast-diag-step {
+  flex-shrink: 0;
+  color: var(--primary);
+  min-width: 2.2rem;
+}
+
 @media (max-width: 768px) {
   .sidebar.right { display: none; }
   .sidebar.left { width: 200px; }

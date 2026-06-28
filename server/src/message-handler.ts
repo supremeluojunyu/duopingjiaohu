@@ -10,10 +10,30 @@ function parseMessage(data: WebSocket.RawData): SignalingMessage | null {
   }
 }
 
-function traceCast(roomId: string, from: string, type: string, to: string | undefined): void {
-  if (type === 'subscribe' || type === 'offer' || type === 'answer' || type === 'ice' || type === 'publish_started') {
-    console.log(`[cast] room=${roomId} ${from} -> ${to ?? '*'} : ${type}`);
+function traceCast(
+  roomId: string,
+  from: string,
+  type: string,
+  to: string | undefined,
+  extra?: string
+): void {
+  if (
+    type === 'subscribe' ||
+    type === 'offer' ||
+    type === 'answer' ||
+    type === 'ice' ||
+    type === 'publish_started' ||
+    type === 'publish_stopped'
+  ) {
+    const suffix = extra ? ` (${extra})` : '';
+    console.log(`[cast] room=${roomId} ${from.slice(0, 8)} -> ${to ? to.slice(0, 8) : '*'} : ${type}${suffix}`);
   }
+}
+
+function broadcastCastTargets(roomId: string, excludeDeviceId: string): string[] {
+  return roomManager
+    .listRoomDeviceIds(roomId)
+    .filter((id) => id !== excludeDeviceId);
 }
 
 function error(ws: WebSocket, message: string): void {
@@ -129,7 +149,7 @@ export function handleMessage(ws: WebSocket, raw: WebSocket.RawData): void {
       });
       if (!sent) {
         console.warn(
-          `[signaling] ${msg.type} 投递失败: ${client.deviceId} -> ${to}`
+          `[cast] ${msg.type} 投递失败: ${client.deviceId.slice(0, 8)} -> ${to.slice(0, 8)} (离线或不在房间)`
         );
         error(ws, `目标设备不可达 (${to})，对方可能已离线`);
       }
@@ -157,7 +177,7 @@ export function handleMessage(ws: WebSocket, raw: WebSocket.RawData): void {
         const sent = roomManager.sendToDeviceInRoom(client.roomId, to, message);
         if (!sent) {
           console.warn(
-            `[signaling] ${msg.type} 投递失败: ${client.deviceId} -> ${to}`
+            `[cast] subscribe 投递失败: ${client.deviceId.slice(0, 8)} -> ${to.slice(0, 8)}`
           );
           error(ws, `目标设备不可达 (${to})，对方可能已离线`);
         }
@@ -277,7 +297,14 @@ export function handleMessage(ws: WebSocket, raw: WebSocket.RawData): void {
         client.deviceId,
         Boolean(msg.payload.hasAlpha)
       );
-      traceCast(client.roomId, client.deviceId, 'publish_started', undefined);
+      const targets = broadcastCastTargets(client.roomId, client.deviceId);
+      traceCast(
+        client.roomId,
+        client.deviceId,
+        'publish_started',
+        undefined,
+        `broadcast ${targets.length} devices: ${targets.map((id) => id.slice(0, 8)).join(',') || 'none'}`
+      );
       roomManager.broadcast(
         client.roomId,
         {

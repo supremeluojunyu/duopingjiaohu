@@ -259,6 +259,12 @@ export class RoomManager {
     }
   }
 
+  listRoomDeviceIds(roomId: string): string[] {
+    const room = this.getRoom(roomId);
+    if (!room) return [];
+    return room.devices.map((d) => d.id);
+  }
+
   sendToDevice(deviceId: string, message: SignalingMessage): boolean {
     const ws = this.deviceSockets.get(deviceId);
     if (!ws || ws.readyState !== WebSocket.OPEN) return false;

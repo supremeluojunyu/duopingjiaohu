@@ -178,6 +178,7 @@ class WebRTCManager(
                     TAG,
                     "本地预览已绑定 (${localRenderer.width}x${localRenderer.height}, force=$force)"
                 )
+                castLog("preview", "本地预览已绑定 ${localRenderer.width}x${localRenderer.height}")
                 return true
             }
 
@@ -194,7 +195,7 @@ class WebRTCManager(
                     if (attempts < 30) {
                         mainHandler.postDelayed(this, 200)
                     } else if (!doBind(force = true)) {
-                        Log.e(TAG, "本地预览绑定失败，Surface 可能未就绪")
+                        castError("preview", "本地预览绑定失败，Surface 可能未就绪")
                     }
                 }
             }
@@ -339,6 +340,18 @@ class WebRTCManager(
         Log.i(TAG, "offer video m-line: $videoLine | directions: ${directions.ifEmpty { "unknown" }}")
     }
 
+    private fun castLog(step: String, message: String) {
+        Log.i(TAG, "[cast:$step] $message")
+    }
+
+    private fun castWarn(step: String, message: String) {
+        Log.w(TAG, "[cast:$step] $message")
+    }
+
+    private fun castError(step: String, message: String) {
+        Log.e(TAG, "[cast:$step] $message")
+    }
+
     private fun startPublishingInternal(enableSegmentation: Boolean): Boolean {
         if (isPublishing) return true
         return try {
@@ -347,12 +360,12 @@ class WebRTCManager(
                 receiveReady = true
             }
             val peerFactory = factory ?: run {
-                Log.e(TAG, "PeerConnectionFactory 未初始化")
+                castError("preview", "PeerConnectionFactory 未初始化")
                 return false
             }
 
             val capturer = createCameraCapturer() ?: run {
-                Log.e(TAG, "无法打开摄像头")
+                castError("preview", "无法打开摄像头，检查权限与占用")
                 return false
             }
             videoCapturer = capturer
@@ -364,7 +377,7 @@ class WebRTCManager(
             videoSource = source
             capturer.initialize(textureHelper, appContext, source.capturerObserver)
             capturer.startCapture(CAPTURE_WIDTH, CAPTURE_HEIGHT, CAPTURE_FPS)
-            Log.i(TAG, "摄像头采集已启动 ${CAPTURE_WIDTH}x${CAPTURE_HEIGHT}")
+            castLog("preview", "摄像头采集已启动 ${CAPTURE_WIDTH}x${CAPTURE_HEIGHT}")
 
             segmentationPending = enableSegmentation
             if (enableSegmentation) {
@@ -382,10 +395,10 @@ class WebRTCManager(
             localAudioTrack = peerFactory.createAudioTrack("audio0", aSource)
 
             isPublishing = true
-            Log.i(TAG, "推流已开始，本地预览已绑定")
+            castLog("preview", "推流已开始 localVideoTrack=${localVideoTrack != null} renderer=${localRendererInitialized}")
             true
         } catch (e: Exception) {
-            Log.e(TAG, "startPublishing 失败", e)
+            castError("preview", "startPublishing 失败: ${e.message}")
             stopPublishing()
             false
         }
@@ -474,13 +487,13 @@ class WebRTCManager(
                 val publisherId = msg.payload?.get("publisherId")?.asString ?: return
                 val subscriberId = msg.payload?.get("subscriberId")?.asString ?: return
                 if (publisherId != localDeviceId || subscriberId == localDeviceId) return
-                Log.i(TAG, "收到 subscribe: $subscriberId")
+                castLog("subscribe", "收到 ← ${subscriberId.take(8)} (isPublishing=$isPublishing)")
                 notePeerJoined(subscriberId)
                 activeSubscribers.add(subscriberId)
                 pendingSubscribers.add(subscriberId)
                 pendingOfferRetries.remove(peerKey(subscriberId))?.let { mainHandler.removeCallbacks(it) }
                 if (!isPublishing) {
-                    Log.w(TAG, "收到 subscribe 但尚未推流，已排队: $subscriberId")
+                    castWarn("subscribe", "尚未推流，已排队 ${subscriberId.take(8)}")
                     return
                 }
                 offerStreamToPeer(subscriberId, respondToSubscribe = true)
@@ -708,7 +721,7 @@ class WebRTCManager(
             }
         }
         if (localVideoTrack == null) {
-            Log.e(TAG, "本地视频轨道为空，无法发送 offer")
+            castError("offer", "localVideoTrack 为空，无法向 ${remoteId.take(8)} 发 offer")
             return
         }
 
@@ -718,6 +731,7 @@ class WebRTCManager(
             attachLocalTracks(pc)
             logTransceivers(pc, "createOffer 前")
             Log.i(TAG, "准备向 $remoteId 发送 offer")
+            castLog("offer", "准备发送 → ${remoteId.take(8)}")
             makingOffer.add(key)
 
             pc.createOffer(object : SdpObserver {
@@ -731,6 +745,7 @@ class WebRTCManager(
                             pendingSubscribers.remove(remoteId)
                             pendingOfferRetries.remove(key)?.let { mainHandler.removeCallbacks(it) }
                             sendSdp("offer", offer, remoteId)
+                            castLog("offer", "已发送 → ${remoteId.take(8)}")
                             Log.i(TAG, "offer 已发送: $remoteId")
                             scheduleOfferRetryIfNoAnswer(remoteId)
                         }
@@ -914,9 +929,13 @@ class WebRTCManager(
             override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
                 when (state) {
                     PeerConnection.IceConnectionState.CONNECTED ->
-                        Log.i(TAG, "ICE 连接已建立: $remoteId")
+                        castLog("ice", "ICE 已连接 ${remoteId.take(8)}")
+                    PeerConnection.IceConnectionState.COMPLETED ->
+                        castLog("ice", "ICE completed ${remoteId.take(8)}")
+                    PeerConnection.IceConnectionState.CHECKING ->
+                        castWarn("ice", "${remoteId.take(8)} checking…")
                     PeerConnection.IceConnectionState.FAILED -> {
-                        Log.e(TAG, "ICE 连接失败: $remoteId")
+                        castError("ice", "ICE 失败 ${remoteId.take(8)}")
                         if (isPublishing) {
                             resetPublisherPeerConnection(remoteId)
                             mainHandler.postDelayed({

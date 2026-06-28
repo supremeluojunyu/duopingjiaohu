@@ -781,7 +781,25 @@ class WebRTCManager(
 
     private fun subscriberNeedsOffer(remoteId: String): Boolean {
         val pc = peerConnections[peerKey(remoteId)] ?: return true
-        return !isCastConnected(pc)
+        if (isCastConnected(pc)) return false
+        when (pc.connectionState()) {
+            PeerConnection.PeerConnectionState.FAILED,
+            PeerConnection.PeerConnectionState.CLOSED -> return true
+            else -> { /* 进行中勿重发 */ }
+        }
+        when (pc.signalingState()) {
+            PeerConnection.SignalingState.HAVE_LOCAL_OFFER,
+            PeerConnection.SignalingState.STABLE -> return false
+            else -> { }
+        }
+        return pc.connectionState() == PeerConnection.PeerConnectionState.DISCONNECTED
+    }
+
+    private fun isNegotiationInProgress(remoteId: String, pc: PeerConnection): Boolean {
+        if (isCastConnected(pc)) return true
+        if (makingOffer.contains(peerKey(remoteId))) return true
+        return pc.signalingState() == PeerConnection.SignalingState.HAVE_LOCAL_OFFER ||
+            pc.signalingState() == PeerConnection.SignalingState.STABLE
     }
 
     private fun offerStreamToPeer(remoteId: String, respondToSubscribe: Boolean = false) {
@@ -789,37 +807,33 @@ class WebRTCManager(
         val key = peerKey(remoteId)
 
         peerConnections[key]?.let { existing ->
-            // 非 subscribe 触发且已稳定连接：跳过
             if (!respondToSubscribe && isCastConnected(existing)) {
                 Log.i(TAG, "已与 $remoteId 连接，跳过 offer")
                 pendingSubscribers.remove(remoteId)
                 return
             }
-            // subscribe 触发：电脑可能已重建 PC，必须响应；清理 stale offer / 死连接
-            if (respondToSubscribe) {
-                val staleOffer =
-                    existing.signalingState() == PeerConnection.SignalingState.HAVE_LOCAL_OFFER
-                val dead = !isCastConnected(existing)
-                if (staleOffer || dead) {
-                    Log.i(
-                        TAG,
-                        "subscribe 触发，重置连接: $remoteId (staleOffer=$staleOffer dead=$dead)"
-                    )
-                    resetPublisherPeerConnection(remoteId)
+            if (respondToSubscribe || existing.signalingState() == PeerConnection.SignalingState.HAVE_LOCAL_OFFER) {
+                when (existing.connectionState()) {
+                    PeerConnection.PeerConnectionState.FAILED,
+                    PeerConnection.PeerConnectionState.CLOSED -> {
+                        Log.i(TAG, "连接已死，重置后重发 offer: $remoteId")
+                        resetPublisherPeerConnection(remoteId)
+                    }
+                    else -> {
+                        if (isNegotiationInProgress(remoteId, existing)) {
+                            Log.i(TAG, "offer/ICE 进行中，跳过重复 subscribe: $remoteId")
+                            pendingSubscribers.remove(remoteId)
+                            return
+                        }
+                    }
                 }
-            } else if (existing.signalingState() == PeerConnection.SignalingState.HAVE_LOCAL_OFFER) {
-                Log.i(TAG, "offer 已发出，等待 $remoteId answer")
-                return
             }
         }
 
         if (makingOffer.contains(key)) {
-            if (respondToSubscribe) {
-                Log.i(TAG, "subscribe 打断进行中的 offer，重置: $remoteId")
-                resetPublisherPeerConnection(remoteId)
-            } else {
-                return
-            }
+            Log.i(TAG, "createOffer 进行中，跳过: $remoteId")
+            pendingSubscribers.remove(remoteId)
+            return
         }
         if (localVideoTrack == null) {
             castError("offer", "localVideoTrack 为空，无法向 ${remoteId.take(8)} 发 offer")

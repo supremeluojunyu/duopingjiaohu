@@ -449,6 +449,20 @@ export class WebRTCManager {
         e.detail?.match(/^\d+\.\d+\.\d+\.\d+$/)?.[0] ??
         e.message.match(/\d+\.\d+\.\d+\.\d+/)?.[0] ??
         '';
+      const localIp = recent
+        .map((e) => (e.message.includes('本地 host') ? extractIp(e) : ''))
+        .find((ip) => ip.length > 0);
+      const remoteIp = recent
+        .map((e) => (e.message.includes('收到远端 host') ? extractIp(e) : ''))
+        .find((ip) => ip.length > 0);
+      if (localIp && remoteIp && localIp.split('.').slice(0, 3).join('.') !== remoteIp.split('.').slice(0, 3).join('.')) {
+        castLog(
+          'ice',
+          `网段不一致 PC=${localIp} 手机=${remoteIp}`,
+          'err',
+          '不在同一网段无法直连，请同一路由器 WiFi 或启动 coturn'
+        );
+      }
       const remotePublicSrflx = recent.some((e) => {
         if (e.step !== 'ice' || !e.message.includes('收到远端 srflx')) return false;
         const ip = extractIp(e);
@@ -552,11 +566,11 @@ export class WebRTCManager {
       if (type === 'relay') {
         this.relayReadyPeers.add(remoteId);
         castLog('ice', `本地 relay 候选 ${remoteId.slice(0, 8)}`, 'info');
-      } else if (type === 'host' || type === 'srflx') {
+        } else if (type === 'host' || type === 'srflx') {
         if (addr.includes('.local')) {
-          castLog('ice', `本地 mDNS 候选 ${remoteId.slice(0, 8)}`, 'warn', addr);
+          castLog('ice', `本地 mDNS ${remoteId.slice(0, 8)}`, 'warn', addr);
         } else if (addr) {
-          castLog('ice', `本地 ${type} ${remoteId.slice(0, 8)}`, 'info', addr);
+          castLog('ice', `本地 ${type} ${addr}`, 'info');
         }
       }
       this.signaling.send({
@@ -732,7 +746,7 @@ export class WebRTCManager {
       castLog('ice', '收到远端 mDNS 候选', 'warn');
     } else if (type === 'host' || type === 'srflx') {
       const ip = candidate.match(/\d+\.\d+\.\d+\.\d+/)?.[0];
-      if (ip) castLog('ice', `收到远端 ${type} ${ip}`, 'info', ip);
+      if (ip) castLog('ice', `收到远端 ${type} ${ip}`, 'info');
     }
     return {
       candidate,

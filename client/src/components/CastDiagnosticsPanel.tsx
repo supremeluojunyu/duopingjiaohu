@@ -36,7 +36,10 @@ export function CastDiagnosticsPanel() {
             <li key={e.id} className={`cast-diag-item ${e.level}`}>
               <span className="cast-diag-time">{fmtTime(e.ts)}</span>
               <span className="cast-diag-step">{STEP_LABEL[e.step]}</span>
-              <span className="cast-diag-msg">{e.message}</span>
+              <span className="cast-diag-msg">
+                {e.message}
+                {e.detail ? ` · ${e.detail}` : ''}
+              </span>
             </li>
           ))}
         </ul>

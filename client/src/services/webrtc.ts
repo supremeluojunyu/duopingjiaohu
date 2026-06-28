@@ -545,6 +545,8 @@ export class WebRTCManager {
 
     pc.onicecandidate = (event) => {
       if (!event.candidate) return;
+      const candStr = event.candidate.candidate ?? '';
+      if (candStr && !this.isUsableIceCandidate(candStr)) return;
       const type = event.candidate.type ?? 'unknown';
       const addr = event.candidate.address ?? '';
       if (type === 'relay') {
@@ -697,6 +699,13 @@ export class WebRTCManager {
     return pc;
   }
 
+  private isUsableIceCandidate(candidate: string): boolean {
+    const ip = candidate.match(/(\d+\.\d+\.\d+\.\d+)/)?.[1];
+    if (!ip) return true;
+    if (ip === '127.0.0.1' || ip === '0.0.0.0' || ip.startsWith('169.254.')) return false;
+    return true;
+  }
+
   private normalizeIceCandidate(raw: unknown): RTCIceCandidateInit | null {
     if (!raw || typeof raw !== 'object') return null;
     const c = raw as RTCIceCandidateInit & { completed?: boolean };
@@ -705,6 +714,10 @@ export class WebRTCManager {
     let candidate = c.candidate.trim();
     if (!candidate.startsWith('candidate:')) {
       candidate = `candidate:${candidate}`;
+    }
+    if (!this.isUsableIceCandidate(candidate)) {
+      castLog('ice', '忽略远端无效候选', 'warn', '127.0.0.1/链路本地');
+      return null;
     }
     const type = candidate.includes('typ relay')
       ? 'relay'

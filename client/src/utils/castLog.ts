@@ -103,7 +103,11 @@ export function castDiagnosisHint(): string | null {
     has('publish_started') || has('subscribe') || has('offer') || has('answer');
   if (!hasCastFlow) return '未收到 publish_started：检查信令连接与服务器 [cast] 日志';
   if (!has('publish_started') && (has('offer') || has('subscribe'))) {
-    return '信令已通但 publish_started 未记录（可能手机闪退/重连）：请更新 APK 后重试';
+    if (has('ice') || has('ontrack')) {
+      /* ICE 进行中，publish_started 可能被日志淹没 */
+    } else {
+      return '信令已通但 publish_started 未记录（可能手机闪退/重连）：请更新 APK 后重试';
+    }
   }
   if (has('publish_started') && !has('subscribe')) return '未发 subscribe：检查 applyPublisherSync / webrtc 是否就绪';
   if (has('subscribe', '已发送') && !has('offer')) return '手机未发 offer：检查 localVideoTrack 与 subscribe 是否到达手机';
@@ -115,6 +119,9 @@ export function castDiagnosisHint(): string | null {
   const iceOk = iceIsConnected(recent);
 
   if (waitingIce && !iceOk) {
+    if (recent.some((e) => e.message.includes('127.0.0.1') || e.message.includes('无效候选'))) {
+      return '手机 ICE 候选为 127.0.0.1（无效）：请安装 v0.1.8.38 APK 并关闭移动数据';
+    }
     if (recent.some((e) => e.message.includes('跨网段配对失败'))) {
       return '手机 ICE 仍走蜂窝公网(106.x)：关闭移动数据，安装 v0.1.8.37 APK（强制 WiFi ICE）';
     }

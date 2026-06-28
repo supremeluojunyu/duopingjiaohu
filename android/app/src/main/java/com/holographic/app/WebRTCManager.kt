@@ -85,6 +85,7 @@ class WebRTCManager(
     private val pendingOfferRetries = mutableMapOf<String, Runnable>()
     private var localRendererInitialized = false
     private var released = false
+    private var peerFactoryNativeInitialized = false
 
     private inline fun safeRelease(label: String, block: () -> Unit) {
         try {
@@ -612,14 +613,19 @@ class WebRTCManager(
 
     private fun initializeFactory(ignoreCellular: Boolean = false) {
         if (factory != null) return
-        PeerConnectionFactory.initialize(
-            PeerConnectionFactory.InitializationOptions.builder(appContext)
-                .setEnableInternalTracer(false)
-                .createInitializationOptions()
-        )
+        if (!peerFactoryNativeInitialized) {
+            PeerConnectionFactory.initialize(
+                PeerConnectionFactory.InitializationOptions.builder(appContext)
+                    .setEnableInternalTracer(false)
+                    .createInitializationOptions()
+            )
+            peerFactoryNativeInitialized = true
+        }
         val options = PeerConnectionFactory.Options().apply {
             if (ignoreCellular) {
-                networkIgnoreMask = PeerConnectionFactory.Options.ADAPTER_TYPE_CELLULAR
+                networkIgnoreMask =
+                    PeerConnectionFactory.Options.ADAPTER_TYPE_CELLULAR or
+                    PeerConnectionFactory.Options.ADAPTER_TYPE_LOOPBACK
             }
         }
         factory = PeerConnectionFactory.builder()
@@ -628,24 +634,28 @@ class WebRTCManager(
             .setVideoDecoderFactory(DefaultVideoDecoderFactory(eglBase.eglBaseContext))
             .createPeerConnectionFactory()
         if (ignoreCellular) {
-            Log.i(TAG, "PeerConnectionFactory 已创建（忽略蜂窝网卡）")
+            Log.i(TAG, "PeerConnectionFactory 已创建（忽略蜂窝/回环）")
         }
     }
 
-    /** 推流前绑定 WiFi 并重建 Factory，使 ICE host 候选为局域网 IP 而非公网 srflx */
+    /** 推流前重建 Factory，使 ICE 走 WiFi 局域网 IP（勿 bindProcessToNetwork，部分机型只剩 127.0.0.1） */
     private fun prepareNetworkForPublish() {
-        val bound = WiFiNetworkBinder.bindToWifi(appContext)
         val wifiIp = WiFiNetworkBinder.getWifiIpv4(appContext)
-        if (bound && wifiIp != null) {
-            castLog("ice", "WiFi 已绑定 $wifiIp")
-        } else if (bound) {
-            castLog("ice", "WiFi 已绑定")
+        if (wifiIp != null) {
+            castLog("ice", "本机 WiFi $wifiIp")
         } else {
-            castWarn("ice", "WiFi 绑定失败，请关闭移动数据后重试")
+            castWarn("ice", "未检测到 WiFi IP，请确认已连 WiFi 并关闭移动数据")
         }
         disposePeerConnectionsAndFactory()
         initializeFactory(ignoreCellular = true)
         receiveReady = true
+    }
+
+    private fun isUsableIceCandidate(sdp: String): Boolean {
+        val ip = Regex("""(\d+\.\d+\.\d+\.\d+)""").find(sdp)?.groupValues?.getOrNull(1) ?: return true
+        if (ip == "127.0.0.1" || ip == "0.0.0.0") return false
+        if (ip.startsWith("169.254.")) return false
+        return true
     }
 
     private fun disposePeerConnectionsAndFactory() {
@@ -904,6 +914,11 @@ class WebRTCManager(
     /** 推流开始后向已 subscribe 但尚未连通的设备发送 offer */
     fun flushPendingOffers() {
         if (!isPublishing) return
+        mainHandler.postDelayed({ flushPendingOffersNow() }, 500L)
+    }
+
+    private fun flushPendingOffersNow() {
+        if (!isPublishing) return
         val targets = (
             pendingSubscribers +
                 activeSubscribers.filter { subscriberNeedsOffer(it) }
@@ -970,6 +985,7 @@ class WebRTCManager(
         if (candidateStr.isBlank()) return null
         if (candidateStr.startsWith("a=")) candidateStr = candidateStr.removePrefix("a=")
         if (!candidateStr.startsWith("candidate:")) candidateStr = "candidate:$candidateStr"
+        if (!isUsableIceCandidate(candidateStr)) return null
         return IceCandidate(
             candidateObj.get("sdpMid")?.asString,
             candidateObj.get("sdpMLineIndex")?.asInt ?: 0,
@@ -997,6 +1013,10 @@ class WebRTCManager(
         val pc = peerFactory.createPeerConnection(rtcConfig, object : PeerConnection.Observer {
             override fun onIceCandidate(candidate: IceCandidate?) {
                 candidate ?: return
+                if (!isUsableIceCandidate(candidate.sdp)) {
+                    Log.d(TAG, "跳过无效 ICE 候选: ${candidate.sdp.take(80)}")
+                    return
+                }
                 val candType = when {
                     candidate.sdp.contains("typ relay") -> "relay"
                     candidate.sdp.contains("typ srflx") -> "srflx"

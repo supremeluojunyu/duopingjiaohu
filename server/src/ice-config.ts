@@ -21,23 +21,22 @@ export function getIceConfig(): IceConfig {
   const turnUrl = process.env.TURN_URL;
   const turnUser = process.env.TURN_USER ?? 'holo';
   const turnPass = process.env.TURN_PASS ?? 'holo123456';
-  const publicIp = process.env.PUBLIC_IP ?? process.env.SIGNALING_PUBLIC_IP;
+  const publicIp =
+    process.env.PUBLIC_IP ?? process.env.SIGNALING_PUBLIC_IP ?? '124.220.4.69';
 
-  /** 自建 coturn（docker compose --profile turn）优先，国内比 openrelay 更稳定 */
-  if (publicIp) {
-    servers.push({
-      urls: [
-        `turn:${publicIp}:3478?transport=udp`,
-        `turn:${publicIp}:3478?transport=tcp`,
-      ],
-      username: turnUser,
-      credential: turnPass,
-    });
-  }
+  /** 自建 coturn — 始终下发（客户端预配，服务器启动 coturn 后即可用） */
+  servers.push({
+    urls: [
+      `turn:${publicIp}:3478?transport=udp`,
+      `turn:${publicIp}:3478?transport=tcp`,
+    ],
+    username: turnUser,
+    credential: turnPass,
+  });
 
   if (turnUrl && turnUser && turnPass) {
     servers.push({ urls: turnUrl, username: turnUser, credential: turnPass });
-  } else if (!publicIp) {
+  } else {
     servers.push({
       urls: [
         'turn:openrelay.metered.ca:80',

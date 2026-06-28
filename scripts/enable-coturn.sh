@@ -7,7 +7,9 @@ cd "$ROOT"
 PUBLIC_IP="${PUBLIC_IP:-124.220.4.69}"
 
 echo "==> 启动 coturn (PUBLIC_IP=$PUBLIC_IP)"
-echo "    请确保防火墙已放行: UDP/TCP 3478, UDP 49152-65535"
+echo "    腾讯云安全组 + 防火墙需放行:"
+echo "      TCP/UDP 3478"
+echo "      UDP 49152-65535"
 
 export PUBLIC_IP
 docker compose --profile turn up -d coturn

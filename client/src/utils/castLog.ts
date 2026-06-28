@@ -134,6 +134,9 @@ export function castDiagnosisHint(): string | null {
     if (hasMdnsCandidate(recent)) {
       return '电脑 ICE 用了 mDNS(.local)，Android 无法解析：请安装 v0.1.8.35+ 桌面 EXE';
     }
+    if (recent.some((e) => e.message.includes('172.26 host 无法互通'))) {
+      return '172.26 不同子网 UDP 不通：请在 124.220.4.69 运行 enable-coturn.sh 并放行 3478';
+    }
     if (recent.some((e) => e.message.includes('热点 host 直连全部失败'))) {
       return '手机热点 UDP 不通：改用手机连 WiFi，或启动 coturn 走中继';
     }
@@ -141,7 +144,7 @@ export function castDiagnosisHint(): string | null {
       return '已切换 relay-only 但仍未连通：请在 124.220.4.69 启动 coturn 并放行 UDP 3478';
     }
     if (!hasRelayCandidate(recent) && hasIceDiagnostics(recent)) {
-      return 'ICE host 直连失败：勿用电脑连手机热点，改手机连 WiFi 再试';
+      return 'host 直连失败且无 TURN：请启动 coturn（scripts/enable-coturn.sh）';
     }
     if (!hasRelayCandidate(recent)) {
       return 'ICE 未连通且无 relay：跨网需 coturn；同网请换 WiFi 拓扑';

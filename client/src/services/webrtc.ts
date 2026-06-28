@@ -510,6 +510,16 @@ export class WebRTCManager {
           '改用手机连 WiFi（勿电脑连热点），或启动 coturn'
         );
       }
+      const hasLocal172 = recent.some((e) => /本地 host 172\.26\./.test(e.message));
+      const hasRemote172 = recent.some((e) => /收到远端 host 172\.26\./.test(e.message));
+      if (hasLocal172 && hasRemote172 && counts.relay === 0) {
+        castLog(
+          'ice',
+          '172.26 host 无法互通',
+          'err',
+          '172.26.74与153.x不同子网，请在服务器运行 enable-coturn.sh'
+        );
+      }
     } catch {
       /* ignore */
     }

@@ -99,7 +99,12 @@ export function castDiagnosisHint(): string | null {
   const err = (step: CastStep) => recent.find((e) => e.step === step && e.level === 'err');
 
   if (err('preview')) return '手机本地预览失败：检查摄像头权限与 startPublishing 日志';
-  if (!has('publish_started')) return '未收到 publish_started：检查信令连接与服务器 [cast] 日志';
+  const hasCastFlow =
+    has('publish_started') || has('subscribe') || has('offer') || has('answer');
+  if (!hasCastFlow) return '未收到 publish_started：检查信令连接与服务器 [cast] 日志';
+  if (!has('publish_started') && (has('offer') || has('subscribe'))) {
+    return '信令已通但 publish_started 未记录（可能手机闪退/重连）：请更新 APK 后重试';
+  }
   if (has('publish_started') && !has('subscribe')) return '未发 subscribe：检查 applyPublisherSync / webrtc 是否就绪';
   if (has('subscribe', '已发送') && !has('offer')) return '手机未发 offer：检查 localVideoTrack 与 subscribe 是否到达手机';
   if (has('offer') && !has('answer')) return 'answer 未发出：检查 SDP 协商与 transceiver 方向';
@@ -110,6 +115,12 @@ export function castDiagnosisHint(): string | null {
   const iceOk = iceIsConnected(recent);
 
   if (waitingIce && !iceOk) {
+    if (recent.some((e) => e.message.includes('跨网段配对失败'))) {
+      return '手机用公网 IP、电脑在热点内网，无法直连：改手机连 WiFi 或启动 coturn';
+    }
+    if (recent.some((e) => e.message.includes('信令已通但 publish_started'))) {
+      return '手机可能在 ICE 重试时闪退：请安装 v0.1.8.36 APK';
+    }
     if (hasMdnsCandidate(recent)) {
       return '电脑 ICE 用了 mDNS(.local)，Android 无法解析：请安装 v0.1.8.35+ 桌面 EXE';
     }

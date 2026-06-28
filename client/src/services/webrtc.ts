@@ -1,7 +1,7 @@
 import { SignalingClient } from './signaling';
 import { getCachedIceServers } from './ice';
 import { createSegmentedStream } from './segmentation';
-import { castLog } from '../utils/castLog';
+import { castLog, getCastEvents, type CastEvent } from '../utils/castLog';
 import { RemoteStream, StreamType } from '../types';
 
 const LOW_QUALITY_VIDEO: MediaTrackConstraints = { width: 640, height: 480, frameRate: 20 };
@@ -444,6 +444,29 @@ export class WebRTCManager {
       });
       const detail = `host=${counts.host} srflx=${counts.srflx} relay=${counts.relay} mdns=${counts.mdns} 失败对=${counts.pairFailed}`;
       castLog('ice', `ICE 诊断 ${remoteId.slice(0, 8)}`, 'warn', detail);
+      const recent = getCastEvents().slice(-30);
+      const extractIp = (e: CastEvent) =>
+        e.detail?.match(/^\d+\.\d+\.\d+\.\d+$/)?.[0] ??
+        e.message.match(/\d+\.\d+\.\d+\.\d+/)?.[0] ??
+        '';
+      const remotePublicSrflx = recent.some((e) => {
+        if (e.step !== 'ice' || !e.message.includes('收到远端 srflx')) return false;
+        const ip = extractIp(e);
+        return ip.length > 0 && !ip.startsWith('192.168.') && !ip.startsWith('10.');
+      });
+      const localPrivateHost = recent.some((e) => {
+        if (e.step !== 'ice' || !e.message.includes('本地 host')) return false;
+        const ip = extractIp(e);
+        return ip.startsWith('192.168.') || ip.startsWith('10.');
+      });
+      if (remotePublicSrflx && localPrivateHost) {
+        castLog(
+          'ice',
+          '跨网段配对失败',
+          'err',
+          '手机暴露公网 IP(106.x)，电脑在 192.168.x：勿用电脑连热点，改手机连 WiFi 或启动 coturn'
+        );
+      }
       if (counts.mdns > 0 && counts.host === 0) {
         castLog(
           'ice',
@@ -696,7 +719,7 @@ export class WebRTCManager {
       castLog('ice', '收到远端 mDNS 候选', 'warn');
     } else if (type === 'host' || type === 'srflx') {
       const ip = candidate.match(/\d+\.\d+\.\d+\.\d+/)?.[0];
-      if (ip) castLog('ice', `收到远端 ${type} ${ip}`, 'info');
+      if (ip) castLog('ice', `收到远端 ${type} ${ip}`, 'info', ip);
     }
     return {
       candidate,

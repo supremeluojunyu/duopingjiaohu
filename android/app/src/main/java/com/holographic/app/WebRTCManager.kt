@@ -77,6 +77,10 @@ class WebRTCManager(
     private val activeSubscribers = CopyOnWriteArraySet<String>()
     /** ICE 直连失败后强制 TURN relay */
     private val relayOnlyPeers = CopyOnWriteArraySet<String>()
+    /** 已成功 gather relay 候选（无 relay 时不切 relay-only，避免国内 openrelay 不可用） */
+    private val relayReadyPeers = CopyOnWriteArraySet<String>()
+    private val lastIceRecoveryMs = mutableMapOf<String, Long>()
+    private val iceRecoveryCounts = mutableMapOf<String, Int>()
     private val makingOffer = mutableSetOf<String>()
     private val pendingOfferRetries = mutableMapOf<String, Runnable>()
     private var localRendererInitialized = false
@@ -664,12 +668,53 @@ class WebRTCManager(
         }
     }
 
-    private fun resetPublisherPeerConnection(remoteId: String) {
+    private fun resetPublisherPeerConnectionOnMain(remoteId: String) {
         val key = peerKey(remoteId)
         pendingOfferRetries.remove(key)?.let { mainHandler.removeCallbacks(it) }
         makingOffer.remove(key)
         pendingIce.remove(key)
-        peerConnections.remove(key)?.close()
+        peerConnections.remove(key)?.let { pc ->
+            try {
+                pc.close()
+            } catch (e: Exception) {
+                Log.w(TAG, "关闭 PeerConnection 失败: ${e.message}")
+            }
+        }
+    }
+
+    /** PeerConnection 必须在创建线程（主线程）关闭，否则 ICE 回调线程 close 会 native 闪退 */
+    private fun resetPublisherPeerConnection(remoteId: String) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            resetPublisherPeerConnectionOnMain(remoteId)
+        } else {
+            mainHandler.post { resetPublisherPeerConnectionOnMain(remoteId) }
+        }
+    }
+
+    private fun schedulePublisherIceRecovery(remoteId: String, reason: String) {
+        mainHandler.post {
+            if (!isPublishing) return@post
+            val key = peerKey(remoteId)
+            val now = System.currentTimeMillis()
+            if (now - (lastIceRecoveryMs[key] ?: 0L) < 2500L) return@post
+            val count = (iceRecoveryCounts[key] ?: 0) + 1
+            if (count > 5) {
+                castError("ice", "ICE 重试过多 ${remoteId.take(8)}，请检查网络/TURN")
+                return@post
+            }
+            iceRecoveryCounts[key] = count
+            lastIceRecoveryMs[key] = now
+            if (relayReadyPeers.contains(remoteId)) {
+                enableRelayOnly(remoteId, reason)
+            } else {
+                castWarn("ice", "跳过 relay-only ${remoteId.take(8)} ($reason)")
+            }
+            resetPublisherPeerConnectionOnMain(remoteId)
+            mainHandler.postDelayed({
+                if (!isPublishing || !activeSubscribers.contains(remoteId)) return@postDelayed
+                offerStreamToPeer(remoteId, respondToSubscribe = true)
+            }, 1200L)
+        }
     }
 
     private fun isCastConnected(pc: PeerConnection): Boolean {
@@ -867,6 +912,10 @@ class WebRTCManager(
     }
 
     private fun enableRelayOnly(remoteId: String, reason: String) {
+        if (!relayReadyPeers.contains(remoteId)) {
+            castWarn("ice", "跳过 relay-only ${remoteId.take(8)} ($reason)")
+            return
+        }
         if (relayOnlyPeers.add(remoteId)) {
             castWarn("ice", "切换 TURN relay-only ${remoteId.take(8)} ($reason)")
         }
@@ -912,7 +961,10 @@ class WebRTCManager(
                 }
                 Log.d(TAG, "ICE 候选 ($candType): $remoteId")
                 when (candType) {
-                    "relay" -> castLog("ice", "发送 relay 候选 → ${remoteId.take(8)}")
+                    "relay" -> {
+                        relayReadyPeers.add(remoteId)
+                        castLog("ice", "发送 relay 候选 → ${remoteId.take(8)}")
+                    }
                     "host", "srflx" -> {
                         val ip = Regex("""(\d+\.\d+\.\d+\.\d+)""").find(candidate.sdp)?.groupValues?.get(1)
                         if (ip != null) {
@@ -968,24 +1020,19 @@ class WebRTCManager(
             override fun onSignalingChange(state: PeerConnection.SignalingState?) {}
             override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
                 when (state) {
-                    PeerConnection.IceConnectionState.CONNECTED ->
+                    PeerConnection.IceConnectionState.CONNECTED -> {
+                        iceRecoveryCounts.remove(peerKey(remoteId))
                         castLog("ice", "ICE 已连接 ${remoteId.take(8)}")
-                    PeerConnection.IceConnectionState.COMPLETED ->
+                    }
+                    PeerConnection.IceConnectionState.COMPLETED -> {
+                        iceRecoveryCounts.remove(peerKey(remoteId))
                         castLog("ice", "ICE completed ${remoteId.take(8)}")
+                    }
                     PeerConnection.IceConnectionState.CHECKING ->
                         castWarn("ice", "${remoteId.take(8)} checking…")
                     PeerConnection.IceConnectionState.FAILED -> {
                         castError("ice", "ICE 失败 ${remoteId.take(8)}")
-                        enableRelayOnly(remoteId, "failed")
-                        if (isPublishing) {
-                            resetPublisherPeerConnection(remoteId)
-                            mainHandler.postDelayed({
-                                offerStreamToPeer(
-                                    remoteId,
-                                    respondToSubscribe = activeSubscribers.contains(remoteId)
-                                )
-                            }, 500)
-                        }
+                        schedulePublisherIceRecovery(remoteId, "failed")
                     }
                     PeerConnection.IceConnectionState.DISCONNECTED -> {
                         castWarn("ice", "${remoteId.take(8)} disconnected")
@@ -996,12 +1043,7 @@ class WebRTCManager(
                                 if (ice == PeerConnection.IceConnectionState.CONNECTED ||
                                     ice == PeerConnection.IceConnectionState.COMPLETED
                                 ) return@postDelayed
-                                enableRelayOnly(remoteId, "disconnected timeout")
-                                resetPublisherPeerConnection(remoteId)
-                                offerStreamToPeer(
-                                    remoteId,
-                                    respondToSubscribe = activeSubscribers.contains(remoteId)
-                                )
+                                schedulePublisherIceRecovery(remoteId, "disconnected")
                             }, 4000)
                         }
                     }

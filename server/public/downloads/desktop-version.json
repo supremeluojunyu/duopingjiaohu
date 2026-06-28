@@ -1,7 +1,7 @@
 {
-  "versionName": "0.1.8.32",
-  "fileName": "HolographicSystem-Portable-0.1.8-32.exe",
+  "versionName": "0.1.8.33",
+  "fileName": "HolographicSystem-Portable-0.1.8-33.exe",
   "downloadUrl": "/downloads/app-latest.exe",
   "sha256": "",
-  "releaseNotes": "v0.1.8.32 ICE connected before video bind"
+  "releaseNotes": "v0.1.8.33 TURN relay ICE fix"
 }

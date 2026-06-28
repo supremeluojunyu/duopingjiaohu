@@ -1,10 +1,10 @@
 {
-  "versionName": "0.1.8.32",
-  "versionCode": 38,
-  "fileName": "holographic-0.1.8.32.apk",
-  "fileSize": 98745650,
-  "sha256": "04474c96889f31772aefbce7700c1b104e72da4ac07ce8963a6aed6eab2ea5f4",
-  "updatedAt": "2026-06-28T08:29:12.000Z",
+  "versionName": "0.1.8.33",
+  "versionCode": 39,
+  "fileName": "holographic-0.1.8.33.apk",
+  "fileSize": 98762034,
+  "sha256": "d7ef68fd7b2784be6746fae6418f43d07ddfc11600e9032cecf20b2e57c45a99",
+  "updatedAt": "2026-06-28T08:49:57.000Z",
   "available": true,
-  "releaseNotes": "v0.1.8.32 ICE连通后再绑定画面/失败自动重试"
+  "releaseNotes": "v0.1.8.33 ICE TURN relay 修复"
 }

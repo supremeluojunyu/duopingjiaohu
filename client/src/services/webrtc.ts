@@ -35,6 +35,8 @@ export class WebRTCManager {
   >();
   private streamRevisions = new Map<string, number>();
   private iceRecoveryTimers = new Map<string, number>();
+  /** ICE 直连失败后强制走 TURN relay */
+  private relayOnlyPeers = new Set<string>();
 
   private streamKey(remoteId: string, streamType: StreamType): string {
     return `${remoteId}:${streamType}`;
@@ -390,6 +392,13 @@ export class WebRTCManager {
     this.tryPublishRemoteStream(streamKey, remoteId, streamType, pending.stream, pending.track, pc, 'ice-connected');
   }
 
+  private enableRelayOnly(remoteId: string, reason: string): boolean {
+    if (this.relayOnlyPeers.has(remoteId)) return false;
+    this.relayOnlyPeers.add(remoteId);
+    castLog('ice', `切换 TURN relay-only ${remoteId.slice(0, 8)}`, 'warn', reason);
+    return true;
+  }
+
   private scheduleIceRecovery(streamKey: string, remoteId: string, streamType: StreamType, pc: RTCPeerConnection): void {
     const existing = this.iceRecoveryTimers.get(streamKey);
     if (existing) clearTimeout(existing);
@@ -398,6 +407,7 @@ export class WebRTCManager {
       if (this.peers.get(this.subscriberPcKey(remoteId, streamType)) !== pc) return;
       const ice = pc.iceConnectionState;
       if (ice === 'connected' || ice === 'completed') return;
+      this.enableRelayOnly(remoteId, `disconnected 超时 ice=${ice}`);
       castLog('ice', `${remoteId.slice(0, 8)} ${ice} 超时，重试 subscribe`, 'warn');
       this.remoteStreams.delete(streamKey);
       this.pendingRemoteMedia.delete(streamKey);
@@ -441,6 +451,7 @@ export class WebRTCManager {
       iceServers: this.iceServers.length > 0 ? this.iceServers : getCachedIceServers(),
       bundlePolicy: 'max-bundle',
       iceCandidatePoolSize: 4,
+      iceTransportPolicy: this.relayOnlyPeers.has(remoteId) ? 'relay' : 'all',
     });
     const subKey = this.subscriberPcKey(remoteId, streamType);
 
@@ -549,6 +560,7 @@ export class WebRTCManager {
           this.scheduleIceRecovery(streamKey, remoteId, streamType, pc);
         }
         if (ice === 'failed') {
+          this.enableRelayOnly(remoteId, 'ice failed');
           this.remoteStreams.delete(streamKey);
           this.pendingRemoteMedia.delete(streamKey);
           this.notifyStreams();
@@ -564,11 +576,22 @@ export class WebRTCManager {
 
   private normalizeIceCandidate(raw: unknown): RTCIceCandidateInit | null {
     if (!raw || typeof raw !== 'object') return null;
-    const c = raw as RTCIceCandidateInit;
+    const c = raw as RTCIceCandidateInit & { completed?: boolean };
+    if (c.completed || c.candidate === '') return null;
     if (!c.candidate || typeof c.candidate !== 'string') return null;
     let candidate = c.candidate.trim();
     if (!candidate.startsWith('candidate:')) {
       candidate = `candidate:${candidate}`;
+    }
+    const type = candidate.includes('typ relay')
+      ? 'relay'
+      : candidate.includes('typ srflx')
+        ? 'srflx'
+        : candidate.includes('typ host')
+          ? 'host'
+          : '?';
+    if (type === 'relay') {
+      castLog('ice', '收到远端 relay 候选', 'info');
     }
     return {
       candidate,
@@ -728,6 +751,7 @@ export class WebRTCManager {
     this.iceRecoveryTimers.clear();
     this.pendingRemoteMedia.clear();
     this.streamRevisions.clear();
+    this.relayOnlyPeers.clear();
   }
 }
 

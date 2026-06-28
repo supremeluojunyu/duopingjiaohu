@@ -7,9 +7,10 @@ services:
       - "${PORT:-8765}:8765"
     environment:
       PORT: ${PORT:-8765}
+      PUBLIC_IP: ${PUBLIC_IP:-124.220.4.69}
       TURN_URL: ${TURN_URL:-}
-      TURN_USER: ${TURN_USER:-}
-      TURN_PASS: ${TURN_PASS:-}
+      TURN_USER: ${TURN_USER:-holo}
+      TURN_PASS: ${TURN_PASS:-holo123456}
       TURN_URLS: ${TURN_URLS:-}
     restart: unless-stopped
     healthcheck:

@@ -11,16 +11,28 @@ export function getIceServers(): RTCIceServer[] {
   ];
 
   const turnUrl = import.meta.env.VITE_TURN_URL;
-  const turnUser = import.meta.env.VITE_TURN_USER;
-  const turnPass = import.meta.env.VITE_TURN_PASS;
+  const turnUser = import.meta.env.VITE_TURN_USER ?? 'holo';
+  const turnPass = import.meta.env.VITE_TURN_PASS ?? 'holo123456';
+  const publicIp = import.meta.env.VITE_PUBLIC_IP;
 
-  if (turnUrl && turnUser && turnPass) {
+  if (publicIp) {
+    servers.push({
+      urls: [
+        `turn:${publicIp}:3478?transport=udp`,
+        `turn:${publicIp}:3478?transport=tcp`,
+      ],
+      username: turnUser,
+      credential: turnPass,
+    });
+  }
+
+  if (turnUrl && import.meta.env.VITE_TURN_USER && import.meta.env.VITE_TURN_PASS) {
     servers.push({
       urls: turnUrl,
       username: turnUser,
       credential: turnPass,
     });
-  } else {
+  } else if (!publicIp) {
     servers.push({
       urls: [
         'turn:openrelay.metered.ca:80',

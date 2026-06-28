@@ -34,6 +34,14 @@ object IceConfigFetcher {
         PeerConnection.IceServer.builder("turn:openrelay.metered.ca:443?transport=tcp")
             .setUsername("openrelayproject")
             .setPassword("openrelayproject")
+            .createIceServer(),
+        PeerConnection.IceServer.builder("turn:124.220.4.69:3478?transport=tcp")
+            .setUsername("holo")
+            .setPassword("holo123456")
+            .createIceServer(),
+        PeerConnection.IceServer.builder("turn:124.220.4.69:3478?transport=udp")
+            .setUsername("holo")
+            .setPassword("holo123456")
             .createIceServer()
     )
 

@@ -85,6 +85,10 @@ export function castDiagnosisHint(): string | null {
     (e) => e.step === 'ontrack' && e.level === 'warn' && e.message.includes('等待 ICE')
   );
   if (waitingIce && !has('ice', 'connected')) {
+    const noRelay = !recent.some((e) => e.message.includes('relay'));
+    if (noRelay) {
+      return 'ICE 未连通且无 relay 候选：请在信令服务器启动 coturn（docker compose --profile turn up -d）';
+    }
     return 'SDP 已协商但 ICE 未连通：检查 NAT/防火墙，建议同一 WiFi 或配置 TURN';
   }
   const iceWarn = recent.find((e) => e.step === 'ice' && e.message.includes('checking'));

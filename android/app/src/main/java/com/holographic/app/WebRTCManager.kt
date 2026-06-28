@@ -75,6 +75,8 @@ class WebRTCManager(
     private val pendingSubscribers = CopyOnWriteArraySet<String>()
     /** 曾发送 subscribe 的订阅方；用于重连/重建连接时补发 offer */
     private val activeSubscribers = CopyOnWriteArraySet<String>()
+    /** ICE 直连失败后强制 TURN relay */
+    private val relayOnlyPeers = CopyOnWriteArraySet<String>()
     private val makingOffer = mutableSetOf<String>()
     private val pendingOfferRetries = mutableMapOf<String, Runnable>()
     private var localRendererInitialized = false
@@ -850,6 +852,37 @@ class WebRTCManager(
         return getOrCreatePeerConnection(remoteId)
     }
 
+    private fun rtcConfigForPeer(remoteId: String): PeerConnection.RTCConfiguration {
+        return PeerConnection.RTCConfiguration(activeIceServers()).apply {
+            sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
+            continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
+            tcpCandidatePolicy = PeerConnection.TcpCandidatePolicy.ENABLED
+            iceTransportsType = if (relayOnlyPeers.contains(remoteId)) {
+                PeerConnection.IceTransportsType.RELAY
+            } else {
+                PeerConnection.IceTransportsType.ALL
+            }
+        }
+    }
+
+    private fun enableRelayOnly(remoteId: String, reason: String) {
+        if (relayOnlyPeers.add(remoteId)) {
+            castWarn("ice", "切换 TURN relay-only ${remoteId.take(8)} ($reason)")
+        }
+    }
+
+    private fun parseIceCandidate(candidateObj: com.google.gson.JsonObject): IceCandidate? {
+        var candidateStr = candidateObj.get("candidate")?.asString ?: return null
+        if (candidateStr.isBlank()) return null
+        if (candidateStr.startsWith("a=")) candidateStr = candidateStr.removePrefix("a=")
+        if (!candidateStr.startsWith("candidate:")) candidateStr = "candidate:$candidateStr"
+        return IceCandidate(
+            candidateObj.get("sdpMid")?.asString,
+            candidateObj.get("sdpMLineIndex")?.asInt ?: 0,
+            candidateStr
+        )
+    }
+
     private fun getOrCreatePeerConnection(remoteId: String): PeerConnection {
         val key = peerKey(remoteId)
         peerConnections[key]?.let { existing ->
@@ -865,10 +898,7 @@ class WebRTCManager(
         }
 
         val peerFactory = factory ?: throw IllegalStateException("PeerConnectionFactory 未初始化")
-        val rtcConfig = PeerConnection.RTCConfiguration(activeIceServers()).apply {
-            sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
-            continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
-        }
+        val rtcConfig = rtcConfigForPeer(remoteId)
 
         val pc = peerFactory.createPeerConnection(rtcConfig, object : PeerConnection.Observer {
             override fun onIceCandidate(candidate: IceCandidate?) {
@@ -880,6 +910,9 @@ class WebRTCManager(
                     else -> "unknown"
                 }
                 Log.d(TAG, "ICE 候选 ($candType): $remoteId")
+                if (candType == "relay") {
+                    castLog("ice", "发送 relay 候选 → ${remoteId.take(8)}")
+                }
                 signaling.send(
                     "ice",
                     mapOf(
@@ -936,6 +969,7 @@ class WebRTCManager(
                         castWarn("ice", "${remoteId.take(8)} checking…")
                     PeerConnection.IceConnectionState.FAILED -> {
                         castError("ice", "ICE 失败 ${remoteId.take(8)}")
+                        enableRelayOnly(remoteId, "failed")
                         if (isPublishing) {
                             resetPublisherPeerConnection(remoteId)
                             mainHandler.postDelayed({
@@ -943,7 +977,25 @@ class WebRTCManager(
                                     remoteId,
                                     respondToSubscribe = activeSubscribers.contains(remoteId)
                                 )
-                            }, 1500)
+                            }, 500)
+                        }
+                    }
+                    PeerConnection.IceConnectionState.DISCONNECTED -> {
+                        castWarn("ice", "${remoteId.take(8)} disconnected")
+                        if (isPublishing) {
+                            mainHandler.postDelayed({
+                                val pcRef = peerConnections[peerKey(remoteId)] ?: return@postDelayed
+                                val ice = pcRef.iceConnectionState()
+                                if (ice == PeerConnection.IceConnectionState.CONNECTED ||
+                                    ice == PeerConnection.IceConnectionState.COMPLETED
+                                ) return@postDelayed
+                                enableRelayOnly(remoteId, "disconnected timeout")
+                                resetPublisherPeerConnection(remoteId)
+                                offerStreamToPeer(
+                                    remoteId,
+                                    respondToSubscribe = activeSubscribers.contains(remoteId)
+                                )
+                            }, 4000)
                         }
                     }
                     else ->
@@ -1064,18 +1116,11 @@ class WebRTCManager(
         val from = msg.from ?: return
         val key = peerKey(from)
         val candidateObj = msg.payload?.getAsJsonObject("candidate") ?: return
-        val candidateStr = candidateObj.get("candidate")?.asString
-        if (candidateStr.isNullOrBlank()) {
-            Log.w(TAG, "收到空 ICE candidate: $from")
-            return
-        }
-        val candidate = IceCandidate(
-            candidateObj.get("sdpMid")?.asString,
-            candidateObj.get("sdpMLineIndex")?.asInt ?: 0,
-            candidateStr
-        )
+        val candidate = parseIceCandidate(candidateObj) ?: return
         val pc = peerConnections[key]
         if (pc != null && pc.remoteDescription != null) {
+            pc.addIceCandidate(candidate)
+        } else if (pc != null && pc.localDescription != null) {
             pc.addIceCandidate(candidate)
         } else {
             pendingIce.getOrPut(key) { mutableListOf() }.add(candidate)

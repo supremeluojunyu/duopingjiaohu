@@ -61,6 +61,16 @@ export class WebRTCManager {
 
   setIceServers(servers: RTCIceServer[]): void {
     this.iceServers = servers;
+    const hasTurn = servers.some((s) => {
+      const urls = Array.isArray(s.urls) ? s.urls : [s.urls];
+      return urls.some((u) => String(u).startsWith('turn:'));
+    });
+    castLog(
+      'ice',
+      hasTurn ? `ICE 配置 ${servers.length} 项（含 TURN）` : 'ICE 配置无 TURN',
+      hasTurn ? 'info' : 'warn',
+      hasTurn ? undefined : '跨网投屏需 coturn，运行 scripts/enable-coturn.sh'
+    );
     const config: RTCConfiguration = { iceServers: servers };
     for (const pc of this.peers.values()) {
       try {
@@ -340,7 +350,12 @@ export class WebRTCManager {
 
   private isIceMediaReady(pc: RTCPeerConnection): boolean {
     const ice = pc.iceConnectionState;
-    return ice === 'connected' || ice === 'completed';
+    const conn = pc.connectionState;
+    return (
+      ice === 'connected' ||
+      ice === 'completed' ||
+      conn === 'connected'
+    );
   }
 
   private tryPublishRemoteStream(
@@ -483,12 +498,16 @@ export class WebRTCManager {
           this.tryPublishRemoteStream(streamKey, remoteId, streamType, stream, track, pc, 'ontrack');
         };
 
-        track.onunmute = publish;
+        track.onunmute = () => {
+          if (this.isIceMediaReady(pc)) {
+            this.tryPublishRemoteStream(streamKey, remoteId, streamType, stream, track, pc, 'unmute');
+          }
+        };
         publish();
       };
 
       pc.onconnectionstatechange = () => {
-        castLog('ice', `connection ${remoteId.slice(0, 8)}: ${pc.connectionState}`, 'info');
+        castLog('ice', `peer ${remoteId.slice(0, 8)} conn=${pc.connectionState}`, 'info');
         if (pc.connectionState === 'connected') {
           this.flushPendingRemoteStream(streamKey, remoteId, streamType, pc);
           const existing = this.remoteStreams.get(streamKey);
@@ -540,9 +559,23 @@ export class WebRTCManager {
         }
         if (ice === 'checking') {
           const iceKey = subKey;
-          window.setTimeout(() => {
+          let sawRelay = false;
+          window.setTimeout(async () => {
             const current = this.peers.get(iceKey);
             if (!current || current !== pc) return;
+            try {
+              const report = await pc.getStats();
+              report.forEach((stat) => {
+                if (
+                  stat.type === 'local-candidate' &&
+                  (stat as { candidateType?: string }).candidateType === 'relay'
+                ) {
+                  sawRelay = true;
+                }
+              });
+            } catch {
+              /* ignore */
+            }
             if (
               current.iceConnectionState === 'checking' ||
               current.iceConnectionState === 'new'
@@ -551,10 +584,18 @@ export class WebRTCManager {
                 'ice',
                 `${remoteId.slice(0, 8)} 长时间 checking`,
                 'warn',
-                '检查 STUN/网络，建议同一 WiFi'
+                sawRelay ? '已有 relay 候选' : '无 relay 候选，需启动 coturn'
               );
+              if (!sawRelay && this.relayOnlyPeers.has(remoteId)) {
+                castLog(
+                  'ice',
+                  'relay-only 但无 TURN 可用',
+                  'err',
+                  '请在 124.220.4.69 运行 enable-coturn.sh'
+                );
+              }
             }
-          }, 15000);
+          }, 12000);
         }
         if (ice === 'disconnected') {
           this.scheduleIceRecovery(streamKey, remoteId, streamType, pc);

@@ -726,6 +726,7 @@ class WebRTCManager(
             castError("offer", "localVideoTrack 为空，无法向 ${remoteId.take(8)} 发 offer")
             return
         }
+        castLog("offer", "videoTrack enabled=${localVideoTrack?.enabled()} state=${localVideoTrack?.state()}")
 
         try {
             ensureReceiveReady()

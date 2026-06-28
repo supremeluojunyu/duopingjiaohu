@@ -12,11 +12,11 @@ const SELF_TURN: RTCIceServer = {
 };
 
 function mergeSelfTurn(servers: RTCIceServer[]): RTCIceServer[] {
-  const hasSelf = servers.some((s) => {
+  const rest = servers.filter((s) => {
     const urls = Array.isArray(s.urls) ? s.urls : [s.urls];
-    return urls.some((u) => String(u).includes('124.220.4.69:3478'));
+    return !urls.some((u) => String(u).includes('124.220.4.69:3478'));
   });
-  return hasSelf ? servers : [...servers, SELF_TURN];
+  return [SELF_TURN, ...rest];
 }
 
 export async function fetchIceServers(signalingUrl: string): Promise<RTCIceServer[]> {

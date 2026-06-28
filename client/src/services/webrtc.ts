@@ -41,6 +41,8 @@ export class WebRTCManager {
   private relayReadyPeers = new Set<string>();
   /** 远端 host 网段，用于过滤 PC 多网卡虚拟地址 */
   private remoteSubnetByPeer = new Map<string, string>();
+  /** 远端已成功 gather relay（手机 TURN 可用） */
+  private remoteRelaySeen = new Set<string>();
 
   private streamKey(remoteId: string, streamType: StreamType): string {
     return `${remoteId}:${streamType}`;
@@ -413,18 +415,47 @@ export class WebRTCManager {
 
   private enableRelayOnly(remoteId: string, reason: string): boolean {
     if (this.relayOnlyPeers.has(remoteId)) return false;
-    if (!this.relayReadyPeers.has(remoteId)) {
+    if (!this.relayReadyPeers.has(remoteId) && !this.remoteRelaySeen.has(remoteId)) {
       castLog(
         'ice',
         `跳过 relay-only ${remoteId.slice(0, 8)}`,
         'warn',
-        `${reason}（未 gather 到 relay，保持 host 直连重试）`
+        `${reason}（无 TURN 可用）`
       );
       return false;
     }
     this.relayOnlyPeers.add(remoteId);
     castLog('ice', `切换 TURN relay-only ${remoteId.slice(0, 8)}`, 'warn', reason);
     return true;
+  }
+
+  /** 8s 后若手机有 relay 但电脑无，强制 relay-only 重连 */
+  private scheduleRelayFallback(streamKey: string, remoteId: string, streamType: StreamType, pc: RTCPeerConnection): void {
+    window.setTimeout(async () => {
+      if (this.peers.get(this.subscriberPcKey(remoteId, streamType)) !== pc) return;
+      if (!this.remoteRelaySeen.has(remoteId) || this.relayOnlyPeers.has(remoteId)) return;
+      const ice = pc.iceConnectionState;
+      if (ice === 'connected' || ice === 'completed') return;
+      let localRelay = false;
+      try {
+        const report = await pc.getStats();
+        report.forEach((stat) => {
+          if (
+            stat.type === 'local-candidate' &&
+            (stat as { candidateType?: string }).candidateType === 'relay'
+          ) {
+            localRelay = true;
+          }
+        });
+      } catch {
+        /* ignore */
+      }
+      if (localRelay) return;
+      castLog('ice', '电脑未获取 TURN，relay-only 重试', 'warn', '124.220.4.69:3478');
+      this.relayOnlyPeers.add(remoteId);
+      this.closeSubscriberPc(remoteId, streamType);
+      this.requestMobileStream(remoteId, streamType, true);
+    }, 8000);
   }
 
   private async logIceDiagnostics(pc: RTCPeerConnection, remoteId: string): Promise<void> {
@@ -578,7 +609,7 @@ export class WebRTCManager {
     const pc = new RTCPeerConnection({
       iceServers: this.iceServers.length > 0 ? this.iceServers : getCachedIceServers(),
       bundlePolicy: 'max-bundle',
-      iceCandidatePoolSize: 4,
+      iceCandidatePoolSize: 10,
       iceTransportPolicy: this.relayOnlyPeers.has(remoteId) ? 'relay' : 'all',
     });
     const subKey = this.subscriberPcKey(remoteId, streamType);
@@ -683,6 +714,7 @@ export class WebRTCManager {
         }
         if (ice === 'checking') {
           const iceKey = subKey;
+          this.scheduleRelayFallback(streamKey, remoteId, streamType, pc);
           let sawRelay = false;
           window.setTimeout(async () => {
             const current = this.peers.get(iceKey);
@@ -919,6 +951,9 @@ export class WebRTCManager {
         if (hostIp && candidate.candidate?.includes('typ host')) {
           this.noteRemoteSubnet(msg.from, hostIp);
         }
+        if (candidate.candidate?.includes('typ relay')) {
+          this.remoteRelaySeen.add(msg.from);
+        }
         if (pc?.remoteDescription) {
           await this.addIceCandidateSafe(pc, candidate);
         } else if (pc?.localDescription) {
@@ -974,6 +1009,7 @@ export class WebRTCManager {
     this.streamRevisions.clear();
     this.relayOnlyPeers.clear();
     this.relayReadyPeers.clear();
+    this.remoteRelaySeen.clear();
   }
 }
 

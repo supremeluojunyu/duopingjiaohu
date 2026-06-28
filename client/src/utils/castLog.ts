@@ -134,6 +134,9 @@ export function castDiagnosisHint(): string | null {
     if (hasMdnsCandidate(recent)) {
       return '电脑 ICE 用了 mDNS(.local)，Android 无法解析：请安装 v0.1.8.35+ 桌面 EXE';
     }
+    if (recent.some((e) => e.message.includes('电脑未获取 TURN'))) {
+      return '电脑连不上 TURN：检查 124.220.4.69:3478 是否放行 UDP，或更新桌面 EXE';
+    }
     if (recent.some((e) => e.message.includes('172.26 host 无法互通'))) {
       return '172.26 不同子网 UDP 不通：请在 124.220.4.69 运行 enable-coturn.sh 并放行 3478';
     }

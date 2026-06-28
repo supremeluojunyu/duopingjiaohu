@@ -464,7 +464,7 @@ export class WebRTCManager {
           'ice',
           '跨网段配对失败',
           'err',
-          '手机暴露公网 IP(106.x)，电脑在 192.168.x：勿用电脑连热点，改手机连 WiFi 或启动 coturn'
+          '手机 ICE 仍走蜂窝(106.x)：请关闭移动数据并更新 APK v0.1.8.37'
         );
       }
       if (counts.mdns > 0 && counts.host === 0) {

@@ -361,10 +361,7 @@ class WebRTCManager(
     private fun startPublishingInternal(enableSegmentation: Boolean): Boolean {
         if (isPublishing) return true
         return try {
-            if (factory == null) {
-                initializeFactory()
-                receiveReady = true
-            }
+            prepareNetworkForPublish()
             val peerFactory = factory ?: run {
                 castError("preview", "PeerConnectionFactory 未初始化")
                 return false
@@ -586,6 +583,7 @@ class WebRTCManager(
             }
             peerConnections.clear()
         }
+        WiFiNetworkBinder.unbind(appContext)
     }
 
     fun release() {
@@ -612,17 +610,63 @@ class WebRTCManager(
         }
     }
 
-    private fun initializeFactory() {
+    private fun initializeFactory(ignoreCellular: Boolean = false) {
         if (factory != null) return
         PeerConnectionFactory.initialize(
             PeerConnectionFactory.InitializationOptions.builder(appContext)
                 .setEnableInternalTracer(false)
                 .createInitializationOptions()
         )
+        val options = PeerConnectionFactory.Options().apply {
+            if (ignoreCellular) {
+                networkIgnoreMask = PeerConnectionFactory.Options.ADAPTER_TYPE_CELLULAR
+            }
+        }
         factory = PeerConnectionFactory.builder()
+            .setOptions(options)
             .setVideoEncoderFactory(DefaultVideoEncoderFactory(eglBase.eglBaseContext, true, true))
             .setVideoDecoderFactory(DefaultVideoDecoderFactory(eglBase.eglBaseContext))
             .createPeerConnectionFactory()
+        if (ignoreCellular) {
+            Log.i(TAG, "PeerConnectionFactory 已创建（忽略蜂窝网卡）")
+        }
+    }
+
+    /** 推流前绑定 WiFi 并重建 Factory，使 ICE host 候选为局域网 IP 而非公网 srflx */
+    private fun prepareNetworkForPublish() {
+        val bound = WiFiNetworkBinder.bindToWifi(appContext)
+        val wifiIp = WiFiNetworkBinder.getWifiIpv4(appContext)
+        if (bound && wifiIp != null) {
+            castLog("ice", "WiFi 已绑定 $wifiIp")
+        } else if (bound) {
+            castLog("ice", "WiFi 已绑定")
+        } else {
+            castWarn("ice", "WiFi 绑定失败，请关闭移动数据后重试")
+        }
+        disposePeerConnectionsAndFactory()
+        initializeFactory(ignoreCellular = true)
+        receiveReady = true
+    }
+
+    private fun disposePeerConnectionsAndFactory() {
+        pendingOfferRetries.values.forEach { mainHandler.removeCallbacks(it) }
+        pendingOfferRetries.clear()
+        makingOffer.clear()
+        pendingIce.clear()
+        peerConnections.values.forEach { pc ->
+            try {
+                pc.close()
+            } catch (e: Exception) {
+                Log.w(TAG, "dispose PC 失败: ${e.message}")
+            }
+        }
+        peerConnections.clear()
+        try {
+            factory?.dispose()
+        } catch (e: Exception) {
+            Log.w(TAG, "dispose factory 失败: ${e.message}")
+        }
+        factory = null
     }
 
     private fun createCameraCapturer(): CameraVideoCapturer? {

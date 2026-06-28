@@ -116,7 +116,7 @@ export function castDiagnosisHint(): string | null {
 
   if (waitingIce && !iceOk) {
     if (recent.some((e) => e.message.includes('跨网段配对失败'))) {
-      return '手机用公网 IP、电脑在热点内网，无法直连：改手机连 WiFi 或启动 coturn';
+      return '手机 ICE 仍走蜂窝公网(106.x)：关闭移动数据，安装 v0.1.8.37 APK（强制 WiFi ICE）';
     }
     if (recent.some((e) => e.message.includes('信令已通但 publish_started'))) {
       return '手机可能在 ICE 重试时闪退：请安装 v0.1.8.36 APK';

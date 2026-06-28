@@ -39,6 +39,8 @@ export class WebRTCManager {
   private relayOnlyPeers = new Set<string>();
   /** 已成功 gather 到 relay 候选的 peer（openrelay 在国内常不可用，无 relay 时不切 relay-only） */
   private relayReadyPeers = new Set<string>();
+  /** 远端 host 网段，用于过滤 PC 多网卡虚拟地址 */
+  private remoteSubnetByPeer = new Map<string, string>();
 
   private streamKey(remoteId: string, streamType: StreamType): string {
     return `${remoteId}:${streamType}`;
@@ -455,13 +457,25 @@ export class WebRTCManager {
       const remoteIp = recent
         .map((e) => (e.message.includes('收到远端 host') ? extractIp(e) : ''))
         .find((ip) => ip.length > 0);
-      if (localIp && remoteIp && localIp.split('.').slice(0, 3).join('.') !== remoteIp.split('.').slice(0, 3).join('.')) {
-        castLog(
-          'ice',
-          `网段不一致 PC=${localIp} 手机=${remoteIp}`,
-          'err',
-          '不在同一网段无法直连，请同一路由器 WiFi 或启动 coturn'
-        );
+      if (localIp && remoteIp) {
+        const localPrefixes = recent
+          .filter((e) => e.message.includes('本地 host'))
+          .map((e) => extractIp(e))
+          .filter((ip) => ip.length > 0)
+          .map((ip) => ip.split('.').slice(0, 3).join('.'));
+        const remotePrefix = remoteIp.split('.').slice(0, 3).join('.');
+        const hasMatch = localPrefixes.some((p) => p === remotePrefix);
+        const has172Match =
+          remoteIp.startsWith('172.26.') &&
+          localPrefixes.some((p) => p.startsWith('172.26.'));
+        if (!hasMatch && !has172Match) {
+          castLog(
+            'ice',
+            `网段不一致 PC=[${localPrefixes.join(',')}] 手机=${remoteIp}`,
+            'err',
+            'PC 多网卡干扰：关闭虚拟网卡/VPN 或启动 coturn'
+          );
+        }
       }
       const remotePublicSrflx = recent.some((e) => {
         if (e.step !== 'ice' || !e.message.includes('收到远端 srflx')) return false;
@@ -504,6 +518,8 @@ export class WebRTCManager {
   private scheduleIceRecovery(streamKey: string, remoteId: string, streamType: StreamType, pc: RTCPeerConnection): void {
     const existing = this.iceRecoveryTimers.get(streamKey);
     if (existing) clearTimeout(existing);
+    const hadStream = this.remoteStreams.has(streamKey);
+    const delay = hadStream ? 15000 : 6000;
     const timer = window.setTimeout(() => {
       this.iceRecoveryTimers.delete(streamKey);
       if (this.peers.get(this.subscriberPcKey(remoteId, streamType)) !== pc) return;
@@ -516,7 +532,7 @@ export class WebRTCManager {
       this.notifyStreams();
       this.closeSubscriberPc(remoteId, streamType);
       this.requestMobileStream(remoteId, streamType, true);
-    }, 4000);
+    }, delay);
     this.iceRecoveryTimers.set(streamKey, timer);
   }
 
@@ -562,11 +578,12 @@ export class WebRTCManager {
       const candStr = event.candidate.candidate ?? '';
       if (candStr && !this.isUsableIceCandidate(candStr)) return;
       const type = event.candidate.type ?? 'unknown';
-      const addr = event.candidate.address ?? '';
+      const addr = event.candidate.address ?? candStr.match(/(\d+\.\d+\.\d+\.\d+)/)?.[1] ?? '';
+      if (addr && !this.shouldSendLocalCandidate(remoteId, addr)) return;
       if (type === 'relay') {
         this.relayReadyPeers.add(remoteId);
         castLog('ice', `本地 relay 候选 ${remoteId.slice(0, 8)}`, 'info');
-        } else if (type === 'host' || type === 'srflx') {
+      } else if (type === 'host' || type === 'srflx') {
         if (addr.includes('.local')) {
           castLog('ice', `本地 mDNS ${remoteId.slice(0, 8)}`, 'warn', addr);
         } else if (addr) {
@@ -699,18 +716,53 @@ export class WebRTCManager {
           this.scheduleIceRecovery(streamKey, remoteId, streamType, pc);
         }
         if (ice === 'failed') {
-          this.enableRelayOnly(remoteId, 'ice failed');
-          this.remoteStreams.delete(streamKey);
-          this.pendingRemoteMedia.delete(streamKey);
-          this.notifyStreams();
-          castLog('ice', `ICE 失败，重试 ${remoteId.slice(0, 8)}`, 'err');
-          this.closeSubscriberPc(remoteId, streamType);
-          this.requestMobileStream(remoteId, streamType, true);
+          const hadMedia = this.remoteStreams.has(streamKey);
+          const retry = () => {
+            if (this.peers.get(subKey) !== pc) return;
+            this.enableRelayOnly(remoteId, 'ice failed');
+            this.remoteStreams.delete(streamKey);
+            this.pendingRemoteMedia.delete(streamKey);
+            this.notifyStreams();
+            castLog('ice', `ICE 失败，重试 ${remoteId.slice(0, 8)}`, 'err');
+            this.closeSubscriberPc(remoteId, streamType);
+            this.requestMobileStream(remoteId, streamType, true);
+          };
+          if (hadMedia) {
+            castLog('ice', `${remoteId.slice(0, 8)} 短暂断流，8s 后重试`, 'warn');
+            window.setTimeout(retry, 8000);
+          } else {
+            retry();
+          }
         }
       };
     }
 
     return pc;
+  }
+
+  private ipPrefix(ip: string): string {
+    return ip.split('.').slice(0, 3).join('.');
+  }
+
+  private noteRemoteSubnet(remoteId: string, ip: string): void {
+    if (!this.remoteSubnetByPeer.has(remoteId)) {
+      this.remoteSubnetByPeer.set(remoteId, this.ipPrefix(ip));
+    }
+  }
+
+  /** 过滤 Hyper-V/虚拟网卡 .1 地址；已知远端网段时只发同网段候选 */
+  private shouldSendLocalCandidate(remoteId: string, ip: string): boolean {
+    if (ip.endsWith('.1') && (ip.startsWith('192.168.128.') || ip.startsWith('192.168.178.'))) {
+      return false;
+    }
+    const remotePrefix = this.remoteSubnetByPeer.get(remoteId);
+    if (!remotePrefix) return true;
+    const localPrefix = this.ipPrefix(ip);
+    if (localPrefix === remotePrefix) return true;
+    const [ra, rb] = remotePrefix.split('.').map(Number);
+    const [la, lb] = localPrefix.split('.').map(Number);
+    if (ra === la && rb === lb && (ra === 10 || ra === 172 || ra === 192)) return true;
+    return false;
   }
 
   private isUsableIceCandidate(candidate: string): boolean {
@@ -853,6 +905,10 @@ export class WebRTCManager {
         const pendingKey = this.peers.has(subKey) ? subKey : pubKey;
         const candidate = this.normalizeIceCandidate(msg.payload.candidate);
         if (!candidate) return;
+        const hostIp = candidate.candidate?.match(/(\d+\.\d+\.\d+\.\d+)/)?.[1];
+        if (hostIp && candidate.candidate?.includes('typ host')) {
+          this.noteRemoteSubnet(msg.from, hostIp);
+        }
         if (pc?.remoteDescription) {
           await this.addIceCandidateSafe(pc, candidate);
         } else if (pc?.localDescription) {

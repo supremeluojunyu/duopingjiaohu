@@ -120,7 +120,7 @@ export function castDiagnosisHint(): string | null {
 
   if (waitingIce && !iceOk) {
     if (recent.some((e) => e.message.includes('网段不一致'))) {
-      return '电脑与手机不在同一网段（如 192.168 vs 172.26）：连同一路由器 WiFi 或启动 coturn';
+      return 'PC 多网卡干扰 ICE：关闭 Hyper-V/虚拟网卡/VPN，或启动 coturn';
     }
     if (recent.some((e) => e.message.includes('127.0.0.1') || e.message.includes('无效候选'))) {
       return '手机 ICE 候选为 127.0.0.1（无效）：请安装 v0.1.8.38 APK 并关闭移动数据';

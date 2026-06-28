@@ -81,6 +81,7 @@ class WebRTCManager(
     private val relayReadyPeers = CopyOnWriteArraySet<String>()
     private val lastIceRecoveryMs = mutableMapOf<String, Long>()
     private val iceRecoveryCounts = mutableMapOf<String, Int>()
+    private val lastIceConnectedMs = mutableMapOf<String, Long>()
     private val makingOffer = mutableSetOf<String>()
     private val pendingOfferRetries = mutableMapOf<String, Runnable>()
     private var localRendererInitialized = false
@@ -749,6 +750,12 @@ class WebRTCManager(
         mainHandler.post {
             if (!isPublishing) return@post
             val key = peerKey(remoteId)
+            val recentlyConnected =
+                System.currentTimeMillis() - (lastIceConnectedMs[key] ?: 0L) < 20_000L
+            if (reason == "disconnected" && recentlyConnected) {
+                castWarn("ice", "短暂 disconnected，跳过重置 ${remoteId.take(8)}")
+                return@post
+            }
             val now = System.currentTimeMillis()
             if (now - (lastIceRecoveryMs[key] ?: 0L) < 2500L) return@post
             val count = (iceRecoveryCounts[key] ?: 0) + 1
@@ -1099,10 +1106,12 @@ class WebRTCManager(
             override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
                 when (state) {
                     PeerConnection.IceConnectionState.CONNECTED -> {
+                        lastIceConnectedMs[peerKey(remoteId)] = System.currentTimeMillis()
                         iceRecoveryCounts.remove(peerKey(remoteId))
                         castLog("ice", "ICE 已连接 ${remoteId.take(8)}")
                     }
                     PeerConnection.IceConnectionState.COMPLETED -> {
+                        lastIceConnectedMs[peerKey(remoteId)] = System.currentTimeMillis()
                         iceRecoveryCounts.remove(peerKey(remoteId))
                         castLog("ice", "ICE completed ${remoteId.take(8)}")
                     }
@@ -1115,14 +1124,20 @@ class WebRTCManager(
                     PeerConnection.IceConnectionState.DISCONNECTED -> {
                         castWarn("ice", "${remoteId.take(8)} disconnected")
                         if (isPublishing) {
+                            val key = peerKey(remoteId)
+                            val grace = if (System.currentTimeMillis() - (lastIceConnectedMs[key] ?: 0L) < 30_000L) {
+                                15_000L
+                            } else {
+                                6_000L
+                            }
                             mainHandler.postDelayed({
-                                val pcRef = peerConnections[peerKey(remoteId)] ?: return@postDelayed
+                                val pcRef = peerConnections[key] ?: return@postDelayed
                                 val ice = pcRef.iceConnectionState()
                                 if (ice == PeerConnection.IceConnectionState.CONNECTED ||
                                     ice == PeerConnection.IceConnectionState.COMPLETED
                                 ) return@postDelayed
                                 schedulePublisherIceRecovery(remoteId, "disconnected")
-                            }, 4000)
+                            }, grace)
                         }
                     }
                     else ->

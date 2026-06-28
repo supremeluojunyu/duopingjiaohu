@@ -44,6 +44,15 @@ export function getIceServers(): RTCIceServer[] {
     });
   }
 
+  servers.push({
+    urls: [
+      'turn:124.220.4.69:3478?transport=udp',
+      'turn:124.220.4.69:3478?transport=tcp',
+    ],
+    username: turnUser,
+    credential: turnPass,
+  });
+
   return servers;
 }
 

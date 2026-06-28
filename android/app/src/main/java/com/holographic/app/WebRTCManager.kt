@@ -72,6 +72,8 @@ class WebRTCManager(
     private var remoteRendererInitialized = false
     private val knownPeerIds = CopyOnWriteArraySet<String>()
     private val pendingSubscribers = CopyOnWriteArraySet<String>()
+    /** 曾发送 subscribe 的订阅方；用于重连/重建连接时补发 offer */
+    private val activeSubscribers = CopyOnWriteArraySet<String>()
     private val makingOffer = mutableSetOf<String>()
     private val pendingOfferRetries = mutableMapOf<String, Runnable>()
     private var localRendererInitialized = false
@@ -418,9 +420,10 @@ class WebRTCManager(
                 if (publisherId != localDeviceId || subscriberId == localDeviceId) return
                 Log.i(TAG, "收到 subscribe: $subscriberId")
                 notePeerJoined(subscriberId)
+                activeSubscribers.add(subscriberId)
+                pendingSubscribers.add(subscriberId)
                 pendingOfferRetries.remove(peerKey(subscriberId))?.let { mainHandler.removeCallbacks(it) }
                 if (!isPublishing) {
-                    pendingSubscribers.add(subscriberId)
                     Log.w(TAG, "收到 subscribe 但尚未推流，已排队: $subscriberId")
                     return
                 }
@@ -435,6 +438,7 @@ class WebRTCManager(
         makingOffer.clear()
         pendingIce.clear()
         pendingSubscribers.clear()
+        // activeSubscribers 保留：信令重连后桌面会再 subscribe，flush/renegotiate 仍需知道订阅方
         peerConnections.values.forEach { pc ->
             try {
                 pc.close()
@@ -451,6 +455,7 @@ class WebRTCManager(
         makingOffer.remove(key)
         pendingIce.remove(key)
         pendingSubscribers.remove(remoteId)
+        activeSubscribers.remove(remoteId)
         peerConnections.remove(key)?.close()
     }
 
@@ -458,6 +463,7 @@ class WebRTCManager(
         isPublishing = false
         segmentationPending = false
         pendingSubscribers.clear()
+        activeSubscribers.clear()
         pendingOfferRetries.values.forEach { mainHandler.removeCallbacks(it) }
         pendingOfferRetries.clear()
 
@@ -603,30 +609,48 @@ class WebRTCManager(
             pc.signalingState() == PeerConnection.SignalingState.STABLE
     }
 
+    private fun subscriberNeedsOffer(remoteId: String): Boolean {
+        val pc = peerConnections[peerKey(remoteId)] ?: return true
+        return !isCastConnected(pc)
+    }
+
     private fun offerStreamToPeer(remoteId: String, respondToSubscribe: Boolean = false) {
         if (!isPublishing || remoteId == localDeviceId) return
         val key = peerKey(remoteId)
 
         peerConnections[key]?.let { existing ->
-            // 仅当非 subscribe 触发且已稳定连接时才跳过；subscribe 必须响应（电脑可能重建了 PC）
+            // 非 subscribe 触发且已稳定连接：跳过
             if (!respondToSubscribe && isCastConnected(existing)) {
                 Log.i(TAG, "已与 $remoteId 连接，跳过 offer")
                 pendingSubscribers.remove(remoteId)
                 return
             }
-            // 关键：已有 offer 在等 answer 时不能重置 PC，否则电脑 answer 永远到不了
-            if (existing.signalingState() == PeerConnection.SignalingState.HAVE_LOCAL_OFFER) {
+            // subscribe 触发：电脑可能已重建 PC，必须响应；清理 stale offer / 死连接
+            if (respondToSubscribe) {
+                val staleOffer =
+                    existing.signalingState() == PeerConnection.SignalingState.HAVE_LOCAL_OFFER
+                val dead = !isCastConnected(existing)
+                if (staleOffer || dead) {
+                    Log.i(
+                        TAG,
+                        "subscribe 触发，重置连接: $remoteId (staleOffer=$staleOffer dead=$dead)"
+                    )
+                    resetPublisherPeerConnection(remoteId)
+                }
+            } else if (existing.signalingState() == PeerConnection.SignalingState.HAVE_LOCAL_OFFER) {
                 Log.i(TAG, "offer 已发出，等待 $remoteId answer")
                 return
             }
-            // subscribe 触发且旧连接不可用：重置后重建
-            if (respondToSubscribe && !isCastConnected(existing)) {
-                Log.i(TAG, "subscribe 触发，重置不可用连接: $remoteId")
-                resetPublisherPeerConnection(remoteId)
-            }
         }
 
-        if (makingOffer.contains(key)) return
+        if (makingOffer.contains(key)) {
+            if (respondToSubscribe) {
+                Log.i(TAG, "subscribe 打断进行中的 offer，重置: $remoteId")
+                resetPublisherPeerConnection(remoteId)
+            } else {
+                return
+            }
+        }
         if (localVideoTrack == null) {
             Log.e(TAG, "本地视频轨道为空，无法发送 offer")
             return
@@ -689,7 +713,7 @@ class WebRTCManager(
             if (pc.signalingState() == PeerConnection.SignalingState.HAVE_LOCAL_OFFER) {
                 Log.w(TAG, "answer 超时，重置并重发 offer: $remoteId")
                 resetPublisherPeerConnection(remoteId)
-                offerStreamToPeer(remoteId)
+                offerStreamToPeer(remoteId, respondToSubscribe = activeSubscribers.contains(remoteId))
             }
         }
         pendingOfferRetries[key] = retry
@@ -698,27 +722,36 @@ class WebRTCManager(
 
     fun renegotiateAllPeers() {
         if (!isPublishing) return
-        // 重连后只向已有连接或已 subscribe 的设备重协商，不主动向未订阅 peer 发 offer
+        // 仅重协商已有 PC 且未连通的 peer；新 subscribe 须等对方发 subscribe（subscribe-first）
         val targets = (
-            peerConnections.keys.map { it.substringBefore(':') } + pendingSubscribers
-        ).filter { it != localDeviceId }.distinct()
+            peerConnections.keys.map { it.substringBefore(':') }.filter { subscriberNeedsOffer(it) } +
+                pendingSubscribers
+            ).filter { it != localDeviceId }.distinct()
         Log.i(TAG, "向 ${targets.size} 个设备重协商: $targets")
         targets.forEachIndexed { index, remoteId ->
-            mainHandler.postDelayed({ offerStreamToPeer(remoteId) }, (index * 200L + 300L))
+            mainHandler.postDelayed({
+                offerStreamToPeer(
+                    remoteId,
+                    respondToSubscribe = activeSubscribers.contains(remoteId)
+                )
+            }, (index * 200L + 300L))
         }
     }
 
-    /** 推流开始后向已 subscribe 但尚未收到 offer 的设备发送 offer */
+    /** 推流开始后向已 subscribe 但尚未连通的设备发送 offer */
     fun flushPendingOffers() {
         if (!isPublishing) return
-        val targets = pendingSubscribers.filter { it != localDeviceId }.distinct()
+        val targets = (
+            pendingSubscribers +
+                activeSubscribers.filter { subscriberNeedsOffer(it) }
+            ).filter { it != localDeviceId }.distinct()
         if (targets.isEmpty()) {
             Log.i(TAG, "暂无待推送设备，等待 subscribe")
             return
         }
         Log.i(TAG, "向 ${targets.size} 个已订阅设备推送 offer: $targets")
         targets.forEach { remoteId ->
-            offerStreamToPeer(remoteId)
+            offerStreamToPeer(remoteId, respondToSubscribe = true)
         }
     }
 
@@ -830,7 +863,12 @@ class WebRTCManager(
                         Log.e(TAG, "ICE 连接失败: $remoteId")
                         if (isPublishing) {
                             resetPublisherPeerConnection(remoteId)
-                            mainHandler.postDelayed({ offerStreamToPeer(remoteId) }, 1500)
+                            mainHandler.postDelayed({
+                                offerStreamToPeer(
+                                    remoteId,
+                                    respondToSubscribe = activeSubscribers.contains(remoteId)
+                                )
+                            }, 1500)
                         }
                     }
                     else ->

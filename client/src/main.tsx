@@ -216,18 +216,35 @@ function App() {
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const autoJoinRef = useRef(false);
   const localDeviceIdRef = useRef<string | null>(null);
+  const publishingDevicesRef = useRef<Set<string>>(new Set());
+  /** joined 重建 WebRTC 前收到的 publish_started，待 webrtc 就绪后补 subscribe */
+  const pendingPublishersRef = useRef<Map<string, boolean>>(new Map());
+
+  const flushPendingSubscribes = useCallback(() => {
+    const webrtc = webrtcRef.current;
+    if (!webrtc || pendingPublishersRef.current.size === 0) return;
+    for (const [deviceId, hasAlpha] of pendingPublishersRef.current.entries()) {
+      webrtc.setDeviceAlpha(deviceId, hasAlpha);
+      webrtc.requestMobileStream(deviceId, 'camera');
+    }
+    pendingPublishersRef.current.clear();
+  }, []);
 
   const applyPublisherSync = useCallback(
     (publishers: { deviceId: string; hasAlpha: boolean }[]) => {
       const selfId = localDeviceIdRef.current;
-      if (publishers.length > 0) {
+      const relevant = publishers.filter((p) => p.deviceId !== selfId);
+      if (relevant.length > 0) {
         setViewMode('grid');
       }
-      for (const p of publishers) {
-        if (p.deviceId === selfId) continue;
+      for (const p of relevant) {
         setPublishingDevices((prev) => new Set(prev).add(p.deviceId));
         setSubscribed((prev) => new Set(prev).add(p.deviceId));
-        webrtcRef.current?.setDeviceAlpha(p.deviceId, p.hasAlpha);
+        if (webrtcRef.current) {
+          webrtcRef.current.setDeviceAlpha(p.deviceId, p.hasAlpha);
+        } else {
+          pendingPublishersRef.current.set(p.deviceId, p.hasAlpha);
+        }
         setMappings((prev) => {
           if (prev.some((m) => m.deviceId === p.deviceId && m.streamType === 'camera')) return prev;
           const visibleCount = prev.filter((m) => m.visible).length;
@@ -236,7 +253,9 @@ function App() {
             createDefaultMapping(p.deviceId, 'camera', visibleCount, visibleCount + 1),
           ];
         });
-        webrtcRef.current?.requestMobileStream(p.deviceId, 'camera');
+        if (webrtcRef.current) {
+          webrtcRef.current.requestMobileStream(p.deviceId, 'camera');
+        }
       }
     },
     []
@@ -250,8 +269,17 @@ function App() {
 
   useScene3D(sceneContainerRef, { mappings, remoteStreams, viewMode, backgroundStream });
 
+  useEffect(() => {
+    publishingDevicesRef.current = publishingDevices;
+  }, [publishingDevices]);
+
   const handleSignalConnection = useCallback((up: boolean) => {
     setSignalStatus(up ? 'connected' : 'reconnecting');
+    if (up && webrtcRef.current && publishingDevicesRef.current.size > 0) {
+      for (const publisherId of publishingDevicesRef.current) {
+        webrtcRef.current.requestMobileStream(publisherId, 'camera');
+      }
+    }
   }, []);
 
   useEffect(() => {
@@ -280,6 +308,7 @@ function App() {
         setSubscribed(new Set());
         setPublishingDevices(new Set());
         setIsPublishing(false);
+        pendingPublishersRef.current.clear();
 
         webrtcRef.current?.destroy();
         webrtcRef.current = null;
@@ -312,7 +341,10 @@ function App() {
           webrtc.setRemoteStreamCallback(setRemoteStreams);
           webrtcRef.current = webrtc;
 
-          signalingRef.current?.send({ type: 'sync_room_state', payload: {} });
+          // 同一 joined 处理内立即恢复已在投屏的发布者（不依赖后续 room_state_sync）
+          const publishers = (payload.publishers as { deviceId: string; hasAlpha: boolean }[]) ?? [];
+          applyPublisherSync(publishers);
+          flushPendingSubscribes();
         }
         break;
       }
@@ -388,23 +420,9 @@ function App() {
       case 'publish_started': {
         const publisherId = msg.payload.deviceId as string;
         if (publisherId === localDeviceIdRef.current) break;
-        setPublishingDevices((prev) => new Set(prev).add(publisherId));
-        setSubscribed((prev) => new Set(prev).add(publisherId));
-        webrtcRef.current?.setDeviceAlpha(
-          publisherId,
-          Boolean(msg.payload.hasAlpha)
-        );
-        setMappings((prev) => {
-          if (prev.some((m) => m.deviceId === publisherId && m.streamType === 'camera')) return prev;
-          const visibleCount = prev.filter((m) => m.visible).length;
-          return [
-            ...prev,
-            createDefaultMapping(publisherId, 'camera', visibleCount, visibleCount + 1),
-          ];
-        });
-        // 收到远端投屏后切到网格，确保画面立即可见
-        setViewMode('grid');
-        webrtcRef.current?.requestMobileStream(publisherId, 'camera');
+        applyPublisherSync([
+          { deviceId: publisherId, hasAlpha: Boolean(msg.payload.hasAlpha) },
+        ]);
         break;
       }
       case 'publish_stopped': {
@@ -432,7 +450,7 @@ function App() {
         alert(msg.payload.message as string);
         break;
     }
-  }, [applyPublisherSync]);
+  }, [applyPublisherSync, flushPendingSubscribes]);
 
   useEffect(() => {
     if (!device || device.type !== 'mobile') return;

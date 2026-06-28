@@ -35,8 +35,9 @@ export function getIceServers(): RTCIceServer[] {
   return servers;
 }
 
+/** 与 Android SignalingConfig、Desktop 打包默认保持一致 */
 export const DEFAULT_SIGNALING_URL =
-  import.meta.env.VITE_SIGNALING_URL ?? 'http://localhost:9876';
+  import.meta.env.VITE_SIGNALING_URL ?? 'http://124.220.4.69:9000';
 
 export const RECONNECT_INTERVAL_MS = 3000;
 export const MAX_RECONNECT_ATTEMPTS = 10;

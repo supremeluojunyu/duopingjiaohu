@@ -26,6 +26,19 @@ export class WebRTCManager {
   private makingOffer = new Set<string>();
   private unregisterSignaling: (() => void) | null = null;
   private trackWatchdogs = new Map<string, ReturnType<typeof setTimeout>>();
+  private lastSubscribeSent = new Map<string, number>();
+
+  private streamKey(remoteId: string, streamType: StreamType): string {
+    return `${remoteId}:${streamType}`;
+  }
+
+  private subscriberPcKey(remoteId: string, streamType: StreamType): string {
+    return `${this.streamKey(remoteId, streamType)}:sub`;
+  }
+
+  private publisherPcKey(remoteId: string, streamType: StreamType): string {
+    return `${this.streamKey(remoteId, streamType)}:pub`;
+  }
 
   constructor(
     private signaling: SignalingClient,
@@ -124,27 +137,43 @@ export class WebRTCManager {
     this.localStream = null;
   }
 
-  /** 电脑端订阅手机投屏：只发 subscribe，等手机 offer */
+  /** 电脑端订阅手机投屏：只发 subscribe，等手机 offer（不在此预建 PC，避免协商中途被 reset） */
   requestMobileStream(publisherId: string, streamType: StreamType = 'camera'): void {
     if (publisherId === this.localDeviceId) return;
-    const key = `${publisherId}:${streamType}`;
-    const pc = this.peers.get(key);
-    if (pc && this.isReceiving(pc) && this.remoteStreams.has(key)) {
+    const streamKey = this.streamKey(publisherId, streamType);
+    const subKey = this.subscriberPcKey(publisherId, streamType);
+    const pc = this.peers.get(subKey);
+
+    if (pc && this.isReceiving(pc) && this.remoteStreams.has(streamKey)) {
       console.log('[WebRTC] 已在接收画面，跳过 subscribe:', publisherId);
       return;
     }
-    if (pc?.signalingState === 'have-local-offer') {
-      console.log('[WebRTC] SDP 协商中，跳过 subscribe:', publisherId);
+
+    if (pc && this.isNegotiating(pc)) {
+      console.log('[WebRTC] 协商进行中，仅重发 subscribe:', publisherId, pc.signalingState);
+      this.sendSubscribe(publisherId, streamType);
       return;
     }
-    if (pc?.signalingState === 'have-remote-offer') {
-      console.log('[WebRTC] 已在处理 offer，跳过 subscribe:', publisherId);
+
+    if (pc && this.shouldResetSubscriber(pc)) {
+      console.warn('[WebRTC] 重置失效连接并 subscribe:', publisherId, pc.connectionState);
+      this.closeSubscriberPc(publisherId, streamType);
+    } else if (pc) {
+      console.log('[WebRTC] 连接仍有效/建立中，重发 subscribe:', publisherId, pc.connectionState);
+    }
+
+    this.sendSubscribe(publisherId, streamType);
+  }
+
+  private sendSubscribe(publisherId: string, streamType: StreamType, attempt = 0): void {
+    const subKey = this.subscriberPcKey(publisherId, streamType);
+    const now = Date.now();
+    const last = this.lastSubscribeSent.get(subKey) ?? 0;
+    if (attempt === 0 && now - last < 1500) {
+      console.log('[WebRTC] subscribe 去重跳过:', publisherId);
       return;
     }
-    if (pc) {
-      console.warn('[WebRTC] 重置旧连接并重新 subscribe:', publisherId, pc.connectionState);
-      this.closeSubscriberPc(key);
-    }
+
     const ok = this.signaling.send({
       type: 'subscribe',
       to: publisherId,
@@ -154,7 +183,17 @@ export class WebRTCManager {
         streamType,
       },
     });
-    console.log(ok ? '[WebRTC] subscribe 已发送:' : '[WebRTC] subscribe 失败:', publisherId);
+
+    if (ok) {
+      this.lastSubscribeSent.set(subKey, now);
+      console.log('[WebRTC] subscribe 已发送:', publisherId);
+      return;
+    }
+
+    console.warn('[WebRTC] subscribe 发送失败:', publisherId, 'attempt', attempt);
+    if (attempt < 3) {
+      window.setTimeout(() => this.sendSubscribe(publisherId, streamType, attempt + 1), 500 * (attempt + 1));
+    }
   }
 
   /** @deprecated 使用 requestMobileStream */
@@ -163,12 +202,14 @@ export class WebRTCManager {
   }
 
   unsubscribe(publisherId: string, streamType: StreamType = 'camera'): void {
-    const key = `${publisherId}:${streamType}`;
-    this.peers.get(key)?.close();
-    this.peers.delete(key);
-    this.remoteStreams.delete(key);
-    this.pendingCandidates.delete(key);
-    this.makingOffer.delete(key);
+    const streamKey = this.streamKey(publisherId, streamType);
+    const subKey = this.subscriberPcKey(publisherId, streamType);
+    this.peers.get(subKey)?.close();
+    this.peers.delete(subKey);
+    this.remoteStreams.delete(streamKey);
+    this.pendingCandidates.delete(subKey);
+    this.trackWatchdogs.delete(streamKey);
+    this.lastSubscribeSent.delete(subKey);
     this.notifyStreams();
   }
 
@@ -177,6 +218,23 @@ export class WebRTCManager {
       (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') &&
       pc.connectionState === 'connected'
     );
+  }
+
+  /** SDP/ICE 协商进行中，不可 destroy PC */
+  private isNegotiating(pc: RTCPeerConnection): boolean {
+    const sig = pc.signalingState;
+    if (sig === 'have-local-offer' || sig === 'have-remote-offer') return true;
+    const ice = pc.iceConnectionState;
+    if (ice === 'checking' || ice === 'new') return true;
+    const conn = pc.connectionState;
+    if (conn === 'connecting' || conn === 'new') return true;
+    return false;
+  }
+
+  private shouldResetSubscriber(pc: RTCPeerConnection): boolean {
+    if (pc.connectionState === 'failed' || pc.connectionState === 'closed') return true;
+    if (pc.iceConnectionState === 'failed') return true;
+    return pc.iceConnectionState === 'disconnected' && pc.signalingState === 'stable';
   }
 
   private attachLocalTracks(pc: RTCPeerConnection): void {
@@ -193,17 +251,17 @@ export class WebRTCManager {
 
   private async offerStreamToPeer(remoteId: string, streamType: StreamType = 'camera'): Promise<void> {
     if (!this.localStream || remoteId === this.localDeviceId) return;
-    const key = `${remoteId}:${streamType}`;
-    if (this.makingOffer.has(key)) return;
+    const pubKey = this.publisherPcKey(remoteId, streamType);
+    if (this.makingOffer.has(pubKey)) return;
 
-    let pc = this.peers.get(key);
+    let pc = this.peers.get(pubKey);
     if (!pc) {
-      pc = this.createPeerConnection(remoteId, streamType);
-      this.peers.set(key, pc);
+      pc = this.createPeerConnection(remoteId, streamType, null);
+      this.peers.set(pubKey, pc);
     }
     this.attachLocalTracks(pc);
 
-    this.makingOffer.add(key);
+    this.makingOffer.add(pubKey);
     try {
       const offer = await pc.createOffer({ offerToReceiveAudio: false, offerToReceiveVideo: false });
       await pc.setLocalDescription(offer);
@@ -213,7 +271,7 @@ export class WebRTCManager {
         payload: { sdp: offer, streamType, targetId: remoteId },
       });
     } finally {
-      this.makingOffer.delete(key);
+      this.makingOffer.delete(pubKey);
     }
   }
 
@@ -221,41 +279,61 @@ export class WebRTCManager {
     if (!this.localStream) return;
     const remoteIds = new Set<string>();
     for (const key of this.peers.keys()) {
-      remoteIds.add(key.split(':')[0]!);
+      if (key.endsWith(':pub')) {
+        remoteIds.add(key.split(':')[0]!);
+      }
     }
     await Promise.all([...remoteIds].map((id) => this.offerStreamToPeer(id, 'camera')));
   }
 
-  private closeSubscriberPc(key: string): void {
-    const watchdog = this.trackWatchdogs.get(key);
+  private closeSubscriberPc(remoteId: string, streamType: StreamType): void {
+    const streamKey = this.streamKey(remoteId, streamType);
+    const subKey = this.subscriberPcKey(remoteId, streamType);
+    const watchdog = this.trackWatchdogs.get(streamKey);
     if (watchdog) {
       clearTimeout(watchdog);
-      this.trackWatchdogs.delete(key);
+      this.trackWatchdogs.delete(streamKey);
     }
-    this.peers.get(key)?.close();
-    this.peers.delete(key);
-    this.remoteStreams.delete(key);
-    this.pendingCandidates.delete(key);
-    this.makingOffer.delete(key);
+    this.peers.get(subKey)?.close();
+    this.peers.delete(subKey);
+    this.remoteStreams.delete(streamKey);
+    this.pendingCandidates.delete(subKey);
+    this.lastSubscribeSent.delete(subKey);
+  }
+
+  /** answer 前确保 transceiver 为 recvonly，与手机端 SEND_ONLY offer 对齐 */
+  private ensureRecvOnlyTransceivers(pc: RTCPeerConnection): void {
+    for (const transceiver of pc.getTransceivers()) {
+      const dir = transceiver.direction;
+      if (dir === 'sendrecv' || dir === 'sendonly') {
+        transceiver.direction = 'recvonly';
+      }
+    }
   }
 
   private createSubscriberPc(remoteId: string, streamType: StreamType): RTCPeerConnection {
-    const key = `${remoteId}:${streamType}`;
-    const savedPending = this.pendingCandidates.get(key) ?? [];
-    this.closeSubscriberPc(key);
+    const streamKey = this.streamKey(remoteId, streamType);
+    const subKey = this.subscriberPcKey(remoteId, streamType);
+    const savedPending = this.pendingCandidates.get(subKey) ?? [];
+    this.closeSubscriberPc(remoteId, streamType);
     if (savedPending.length > 0) {
-      this.pendingCandidates.set(key, savedPending);
+      this.pendingCandidates.set(subKey, savedPending);
     }
-    const pc = this.createPeerConnection(remoteId, streamType);
-    this.peers.set(key, pc);
+    const pc = this.createPeerConnection(remoteId, streamType, streamKey);
+    this.peers.set(subKey, pc);
     return pc;
   }
 
-  private createPeerConnection(remoteId: string, streamType: StreamType): RTCPeerConnection {
+  /** @param streamKey 非 null 时为订阅 PC（ontrack 写入 remoteStreams） */
+  private createPeerConnection(
+    remoteId: string,
+    streamType: StreamType,
+    streamKey: string | null
+  ): RTCPeerConnection {
     const pc = new RTCPeerConnection({
       iceServers: this.iceServers.length > 0 ? this.iceServers : getCachedIceServers(),
     });
-    const key = `${remoteId}:${streamType}`;
+    const subKey = this.subscriberPcKey(remoteId, streamType);
 
     pc.onicecandidate = (event) => {
       if (!event.candidate) return;
@@ -270,54 +348,51 @@ export class WebRTCManager {
       });
     };
 
-    pc.ontrack = (event) => {
-      const track = event.track;
-      if (track.kind !== 'video') return;
-      track.enabled = true;
+    if (streamKey) {
+      pc.ontrack = (event) => {
+        const track = event.track;
+        if (track.kind !== 'video') return;
+        track.enabled = true;
 
-      const stream = event.streams[0] ?? new MediaStream([track]);
-      const publish = () => {
-        this.trackWatchdogs.delete(key);
-        this.remoteStreams.set(key, {
-          deviceId: remoteId,
-          streamType,
-          stream,
-          // 网格/缩略图始终直接播视频；3D 绿幕抠图单独处理
-          hasAlpha: this.deviceAlpha.get(remoteId) ?? false,
-        });
-        console.info('[WebRTC] 收到手机画面:', remoteId, 'tracks:', stream.getVideoTracks().length);
-        this.notifyStreams();
+        const stream = event.streams[0] ?? new MediaStream([track]);
+        const publish = () => {
+          this.trackWatchdogs.delete(streamKey);
+          this.remoteStreams.set(streamKey, {
+            deviceId: remoteId,
+            streamType,
+            stream,
+            hasAlpha: this.deviceAlpha.get(remoteId) ?? false,
+          });
+          console.info('[WebRTC] 收到手机画面:', remoteId, 'tracks:', stream.getVideoTracks().length);
+          this.notifyStreams();
+        };
+
+        track.onunmute = publish;
+        publish();
       };
 
-      track.onunmute = publish;
-      if (track.readyState === 'live' && !track.muted) {
-        publish();
-      } else {
-        publish();
-      }
-    };
+      pc.onconnectionstatechange = () => {
+        console.info('[WebRTC] connection:', remoteId, pc.connectionState);
+        if (pc.connectionState === 'connected' && !this.remoteStreams.has(streamKey)) {
+          const watchdog = setTimeout(() => {
+            if (this.peers.get(subKey) !== pc || this.remoteStreams.has(streamKey)) return;
+            console.warn('[WebRTC] 连接成功但 8s 内无画面，重新 subscribe:', remoteId);
+            this.closeSubscriberPc(remoteId, streamType);
+            this.requestMobileStream(remoteId, streamType);
+          }, 8000);
+          this.trackWatchdogs.set(streamKey, watchdog);
+        }
+      };
 
-    pc.onconnectionstatechange = () => {
-      console.info('[WebRTC] connection:', remoteId, pc.connectionState);
-      if (pc.connectionState === 'connected' && !this.remoteStreams.has(key)) {
-        const watchdog = setTimeout(() => {
-          if (this.peers.get(key) !== pc || this.remoteStreams.has(key)) return;
-          console.warn('[WebRTC] 连接成功但 8s 内无画面，重新 subscribe:', remoteId);
-          this.closeSubscriberPc(key);
+      pc.oniceconnectionstatechange = () => {
+        console.info('[WebRTC] ice:', remoteId, pc.iceConnectionState);
+        if (pc.iceConnectionState === 'failed') {
+          console.warn('[WebRTC] ICE 失败，重新 subscribe:', remoteId);
+          this.closeSubscriberPc(remoteId, streamType);
           this.requestMobileStream(remoteId, streamType);
-        }, 8000);
-        this.trackWatchdogs.set(key, watchdog);
-      }
-    };
-
-    pc.oniceconnectionstatechange = () => {
-      console.info('[WebRTC] ice:', remoteId, pc.iceConnectionState);
-      if (pc.iceConnectionState === 'failed') {
-        console.warn('[WebRTC] ICE 失败，重新 subscribe:', remoteId);
-        this.closeSubscriberPc(key);
-        this.requestMobileStream(remoteId, streamType);
-      }
-    };
+        }
+      };
+    }
 
     return pc;
   }
@@ -368,38 +443,49 @@ export class WebRTCManager {
 
       case 'offer': {
         if (!msg.from) return;
-        const key = `${msg.from}:${streamType}`;
+        const subKey = this.subscriberPcKey(msg.from, streamType);
         const sdp = msg.payload.sdp as RTCSessionDescriptionInit;
         console.log('[WebRTC] 收到手机 offer:', msg.from);
 
-        const pc = this.createSubscriberPc(msg.from, streamType);
+        let pc = this.peers.get(subKey);
+        const needsFreshPc =
+          !pc ||
+          pc.connectionState === 'closed' ||
+          pc.signalingState === 'have-local-offer' ||
+          this.shouldResetSubscriber(pc);
+        if (needsFreshPc) {
+          pc = this.createSubscriberPc(msg.from, streamType);
+        }
+        const activePc = pc;
+        if (!activePc) break;
         try {
-          await pc.setRemoteDescription(new RTCSessionDescription(sdp));
-          const answer = await pc.createAnswer();
-          await pc.setLocalDescription(answer);
-          await this.drainPendingIce(key, pc);
+          await activePc.setRemoteDescription(new RTCSessionDescription(sdp));
+          this.ensureRecvOnlyTransceivers(activePc);
+          const answer = await activePc.createAnswer();
+          await activePc.setLocalDescription(answer);
+          await this.drainPendingIce(subKey, activePc);
           this.signaling.send({
             type: 'answer',
             to: msg.from,
             payload: { sdp: answer, streamType, targetId: msg.from },
           });
-          console.log('[WebRTC] answer 已发送:', msg.from, 'signaling:', pc.signalingState);
+          console.log('[WebRTC] answer 已发送:', msg.from, 'signaling:', activePc.signalingState);
         } catch (err) {
           console.error('[WebRTC] 处理 offer 失败:', err);
-          this.closeSubscriberPc(key);
+          this.closeSubscriberPc(msg.from, streamType);
         }
         break;
       }
 
       case 'answer': {
         if (!msg.from) return;
-        const key = `${msg.from}:${streamType}`;
-        const pc = this.peers.get(key);
+        const pubKey = this.publisherPcKey(msg.from, streamType);
+        const pc = this.peers.get(pubKey);
         if (!pc) return;
         const sdp = msg.payload.sdp as RTCSessionDescriptionInit;
         try {
           await pc.setRemoteDescription(new RTCSessionDescription(sdp));
-          await this.drainPendingIce(key, pc);
+          await this.drainPendingIce(pubKey, pc);
         } catch (err) {
           console.error('[WebRTC] 处理 answer 失败:', err);
         }
@@ -408,8 +494,10 @@ export class WebRTCManager {
 
       case 'ice': {
         if (!msg.from) return;
-        const key = `${msg.from}:${streamType}`;
-        const pc = this.peers.get(key);
+        const subKey = this.subscriberPcKey(msg.from, streamType);
+        const pubKey = this.publisherPcKey(msg.from, streamType);
+        const pc = this.peers.get(subKey) ?? this.peers.get(pubKey);
+        const pendingKey = this.peers.has(subKey) ? subKey : pubKey;
         const candidate = this.normalizeIceCandidate(msg.payload.candidate);
         if (!candidate) return;
         if (pc?.remoteDescription) {
@@ -417,9 +505,9 @@ export class WebRTCManager {
         } else if (pc?.localDescription) {
           await this.addIceCandidateSafe(pc, candidate);
         } else {
-          const pending = this.pendingCandidates.get(key) ?? [];
+          const pending = this.pendingCandidates.get(pendingKey) ?? [];
           pending.push(candidate);
-          this.pendingCandidates.set(key, pending);
+          this.pendingCandidates.set(pendingKey, pending);
         }
         break;
       }
@@ -458,6 +546,7 @@ export class WebRTCManager {
     this.pendingCandidates.clear();
     this.makingOffer.clear();
     this.deviceAlpha.clear();
+    this.lastSubscribeSent.clear();
     for (const t of this.trackWatchdogs.values()) clearTimeout(t);
     this.trackWatchdogs.clear();
   }

@@ -1,10 +1,10 @@
 {
-  "versionName": "0.1.8.28",
-  "versionCode": 34,
-  "fileName": "holographic-0.1.8.28.apk",
+  "versionName": "0.1.8.29",
+  "versionCode": 35,
+  "fileName": "holographic-0.1.8.29.apk",
   "fileSize": 98745650,
-  "sha256": "ba4ec9a491988d4976c38c4b59301c648a3af11905a351db3354efddf43a5c0c",
-  "updatedAt": "2026-06-27T12:18:37.000Z",
+  "sha256": "757fa3f71c524bf0546606baa6f82a11695e2d822f09509b266c94f64e60f5c9",
+  "updatedAt": "2026-06-28T05:39:37.000Z",
   "available": true,
-  "releaseNotes": "修复无画面：GridVideo直显video、subscribe强制重协商、信令URL规范化"
+  "releaseNotes": "v0.1.8.29 修复投屏：subscribe去重/协商不reset/信令地址统一/Android重连补offer"
 }

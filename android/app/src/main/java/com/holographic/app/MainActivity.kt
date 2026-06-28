@@ -411,7 +411,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                                 "device_update",
                                 mapOf("hasAlpha" to segmentationEnabled)
                             )
-                            webrtcManager?.renegotiateAllPeers()
+                            webrtcManager?.flushPendingOffers()
                         }
                         signalingClient?.send("sync_room_state", emptyMap())
                     }

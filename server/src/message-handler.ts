@@ -74,6 +74,9 @@ export function handleMessage(ws: WebSocket, raw: WebSocket.RawData): void {
             devices: room.devices,
             mappings: room.mappings,
             presets: room.presets,
+            publishers: roomManager
+              .getPublisherList(room.id)
+              .filter((p) => p.deviceId !== deviceInfo.id),
           },
           timestamp: Date.now(),
         });

@@ -22,7 +22,19 @@ object IceConfigFetcher {
         PeerConnection.IceServer.builder("stun:stun3.l.google.com:19302").createIceServer(),
         PeerConnection.IceServer.builder("stun:stun4.l.google.com:19302").createIceServer(),
         PeerConnection.IceServer.builder("stun:stun.qq.com:3478").createIceServer(),
-        PeerConnection.IceServer.builder("stun:stun.qq.com:19302").createIceServer()
+        PeerConnection.IceServer.builder("stun:stun.qq.com:19302").createIceServer(),
+        PeerConnection.IceServer.builder("turn:openrelay.metered.ca:80")
+            .setUsername("openrelayproject")
+            .setPassword("openrelayproject")
+            .createIceServer(),
+        PeerConnection.IceServer.builder("turn:openrelay.metered.ca:443")
+            .setUsername("openrelayproject")
+            .setPassword("openrelayproject")
+            .createIceServer(),
+        PeerConnection.IceServer.builder("turn:openrelay.metered.ca:443?transport=tcp")
+            .setUsername("openrelayproject")
+            .setPassword("openrelayproject")
+            .createIceServer()
     )
 
     fun httpBaseFromSignalingUrl(signalingUrl: String): String {

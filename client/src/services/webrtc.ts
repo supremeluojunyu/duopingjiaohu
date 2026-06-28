@@ -430,7 +430,7 @@ export class WebRTCManager {
   }
 
   /** 8s 后若手机有 relay 但电脑无，强制 relay-only 重连 */
-  private scheduleRelayFallback(streamKey: string, remoteId: string, streamType: StreamType, pc: RTCPeerConnection): void {
+  private scheduleRelayFallback(remoteId: string, streamType: StreamType, pc: RTCPeerConnection): void {
     window.setTimeout(async () => {
       if (this.peers.get(this.subscriberPcKey(remoteId, streamType)) !== pc) return;
       if (!this.remoteRelaySeen.has(remoteId) || this.relayOnlyPeers.has(remoteId)) return;
@@ -714,7 +714,7 @@ export class WebRTCManager {
         }
         if (ice === 'checking') {
           const iceKey = subKey;
-          this.scheduleRelayFallback(streamKey, remoteId, streamType, pc);
+          this.scheduleRelayFallback(remoteId, streamType, pc);
           let sawRelay = false;
           window.setTimeout(async () => {
             const current = this.peers.get(iceKey);

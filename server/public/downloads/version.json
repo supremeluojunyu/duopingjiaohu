@@ -1,10 +1,10 @@
 {
-  "versionName": "0.1.8.31",
-  "versionCode": 37,
-  "fileName": "holographic-0.1.8.31.apk",
+  "versionName": "0.1.8.32",
+  "versionCode": 38,
+  "fileName": "holographic-0.1.8.32.apk",
   "fileSize": 98745650,
-  "sha256": "42cb80043904cd5595af2a7635a5a8c9ae3eb2768ebe4445434b1cc7271f7e7c",
-  "updatedAt": "2026-06-28T07:29:08.000Z",
+  "sha256": "04474c96889f31772aefbce7700c1b104e72da4ac07ce8963a6aed6eab2ea5f4",
+  "updatedAt": "2026-06-28T08:29:12.000Z",
   "available": true,
-  "releaseNotes": "v0.1.8.31 投屏全链路诊断日志与投屏诊断面板"
+  "releaseNotes": "v0.1.8.32 ICE连通后再绑定画面/失败自动重试"
 }

@@ -814,6 +814,7 @@ function App() {
                 key={`${rs.deviceId}:${rs.streamType}`}
                 stream={rs.stream}
                 label={rs.deviceId.slice(0, 8)}
+                rev={rs.rev}
               />
             ))}
             {remoteStreams.size === 0 && viewMode === 'grid' && (
@@ -892,6 +893,7 @@ function App() {
                 key={`${rs.deviceId}:${rs.streamType}`}
                 stream={rs.stream}
                 label={rs.deviceId.slice(0, 8)}
+                rev={rs.rev}
               />
             ))}
             {remoteStreams.size === 0 && viewMode === 'grid' && (
@@ -937,6 +939,7 @@ function App() {
                 stream={rs.stream}
                 label={rs.deviceId.slice(0, 8)}
                 small
+                rev={rs.rev}
               />
             ))}
           </div>
@@ -969,6 +972,7 @@ function bindVideoToStream(video: HTMLVideoElement, stream: MediaStream): () => 
   play();
   video.addEventListener('loadedmetadata', play);
   video.addEventListener('canplay', play);
+  video.addEventListener('resize', play);
 
   const tracks = stream.getVideoTracks();
   const onUnmute = () => play();
@@ -976,9 +980,20 @@ function bindVideoToStream(video: HTMLVideoElement, stream: MediaStream): () => 
     track.onunmute = onUnmute;
   });
 
+  // ICE 连通前可能无帧，轮询直到有实际分辨率
+  const poll = window.setInterval(() => {
+    if (video.videoWidth > 0 && video.videoHeight > 0) {
+      window.clearInterval(poll);
+      return;
+    }
+    play();
+  }, 500);
+
   return () => {
+    window.clearInterval(poll);
     video.removeEventListener('loadedmetadata', play);
     video.removeEventListener('canplay', play);
+    video.removeEventListener('resize', play);
     tracks.forEach((track) => {
       track.onunmute = null;
     });
@@ -990,10 +1005,12 @@ function GridVideo({
   stream,
   label,
   small,
+  rev,
 }: {
   stream: MediaStream;
   label: string;
   small?: boolean;
+  rev?: number;
 }) {
   const ref = useRef<HTMLVideoElement>(null);
 
@@ -1001,7 +1018,7 @@ function GridVideo({
     const video = ref.current;
     if (!video) return;
     return bindVideoToStream(video, stream);
-  }, [stream, stream.getVideoTracks()[0]?.id]);
+  }, [stream, stream.getVideoTracks()[0]?.id, rev]);
 
   return (
     <div className={`grid-video ${small ? 'small' : ''}`}>

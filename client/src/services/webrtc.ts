@@ -26,8 +26,15 @@ export class WebRTCManager {
   private lowQualityMode = false;
   private makingOffer = new Set<string>();
   private unregisterSignaling: (() => void) | null = null;
-  private trackWatchdogs = new Map<string, ReturnType<typeof setTimeout>>();
+  private trackWatchdogs = new Map<string, number>();
   private lastSubscribeSent = new Map<string, number>();
+  /** ontrack 早于 ICE 连通时暂存，待 connected 后再发布到 UI */
+  private pendingRemoteMedia = new Map<
+    string,
+    { stream: MediaStream; track: MediaStreamTrack; pc: RTCPeerConnection }
+  >();
+  private streamRevisions = new Map<string, number>();
+  private iceRecoveryTimers = new Map<string, number>();
 
   private streamKey(remoteId: string, streamType: StreamType): string {
     return `${remoteId}:${streamType}`;
@@ -148,7 +155,7 @@ export class WebRTCManager {
   }
 
   /** 电脑端订阅手机投屏：只发 subscribe，等手机 offer（不在此预建 PC，避免协商中途被 reset） */
-  requestMobileStream(publisherId: string, streamType: StreamType = 'camera'): void {
+  requestMobileStream(publisherId: string, streamType: StreamType = 'camera', force = false): void {
     if (publisherId === this.localDeviceId) return;
     const streamKey = this.streamKey(publisherId, streamType);
     const subKey = this.subscriberPcKey(publisherId, streamType);
@@ -172,15 +179,21 @@ export class WebRTCManager {
       console.log('[WebRTC] 连接仍有效/建立中，重发 subscribe:', publisherId, pc.connectionState);
     }
 
-    this.sendSubscribe(publisherId, streamType);
+    this.sendSubscribe(publisherId, streamType, 0, force);
   }
 
-  private sendSubscribe(publisherId: string, streamType: StreamType, attempt = 0): void {
+  private sendSubscribe(
+    publisherId: string,
+    streamType: StreamType,
+    attempt = 0,
+    force = false
+  ): void {
     const subKey = this.subscriberPcKey(publisherId, streamType);
     const now = Date.now();
     const last = this.lastSubscribeSent.get(subKey) ?? 0;
     const pc = this.peers.get(subKey);
     if (
+      !force &&
       attempt === 0 &&
       now - last < 1500 &&
       pc &&
@@ -208,7 +221,7 @@ export class WebRTCManager {
 
     castLog('subscribe', `发送失败 ${publisherId.slice(0, 8)}`, attempt < 3 ? 'warn' : 'err', `attempt=${attempt}`);
     if (attempt < 3) {
-      window.setTimeout(() => this.sendSubscribe(publisherId, streamType, attempt + 1), 500 * (attempt + 1));
+      window.setTimeout(() => this.sendSubscribe(publisherId, streamType, attempt + 1, force), 500 * (attempt + 1));
     }
   }
 
@@ -310,11 +323,89 @@ export class WebRTCManager {
       clearTimeout(watchdog);
       this.trackWatchdogs.delete(streamKey);
     }
+    const iceTimer = this.iceRecoveryTimers.get(streamKey);
+    if (iceTimer) {
+      clearTimeout(iceTimer);
+      this.iceRecoveryTimers.delete(streamKey);
+    }
+    this.pendingRemoteMedia.delete(streamKey);
     this.peers.get(subKey)?.close();
     this.peers.delete(subKey);
     this.remoteStreams.delete(streamKey);
     this.pendingCandidates.delete(subKey);
     this.lastSubscribeSent.delete(subKey);
+  }
+
+  private isIceMediaReady(pc: RTCPeerConnection): boolean {
+    const ice = pc.iceConnectionState;
+    return ice === 'connected' || ice === 'completed';
+  }
+
+  private tryPublishRemoteStream(
+    streamKey: string,
+    remoteId: string,
+    streamType: StreamType,
+    stream: MediaStream,
+    track: MediaStreamTrack,
+    pc: RTCPeerConnection,
+    reason: string
+  ): boolean {
+    if (this.peers.get(this.subscriberPcKey(remoteId, streamType)) !== pc) return false;
+
+    if (!this.isIceMediaReady(pc)) {
+      this.pendingRemoteMedia.set(streamKey, { stream, track, pc });
+      castLog(
+        'ontrack',
+        `轨道已协商，等待 ICE ${remoteId.slice(0, 8)}`,
+        'warn',
+        `ice=${pc.iceConnectionState} reason=${reason}`
+      );
+      return false;
+    }
+
+    this.pendingRemoteMedia.delete(streamKey);
+    const rev = (this.streamRevisions.get(streamKey) ?? 0) + 1;
+    this.streamRevisions.set(streamKey, rev);
+    this.trackWatchdogs.delete(streamKey);
+    this.remoteStreams.set(streamKey, {
+      deviceId: remoteId,
+      streamType,
+      stream,
+      hasAlpha: this.deviceAlpha.get(remoteId) ?? false,
+      rev,
+    });
+    castLog(
+      'ontrack',
+      `画面就绪 ${remoteId.slice(0, 8)}`,
+      'ok',
+      `${reason} rev=${rev} track=${track.readyState}`
+    );
+    this.notifyStreams();
+    return true;
+  }
+
+  private flushPendingRemoteStream(streamKey: string, remoteId: string, streamType: StreamType, pc: RTCPeerConnection): void {
+    const pending = this.pendingRemoteMedia.get(streamKey);
+    if (!pending || pending.pc !== pc) return;
+    this.tryPublishRemoteStream(streamKey, remoteId, streamType, pending.stream, pending.track, pc, 'ice-connected');
+  }
+
+  private scheduleIceRecovery(streamKey: string, remoteId: string, streamType: StreamType, pc: RTCPeerConnection): void {
+    const existing = this.iceRecoveryTimers.get(streamKey);
+    if (existing) clearTimeout(existing);
+    const timer = window.setTimeout(() => {
+      this.iceRecoveryTimers.delete(streamKey);
+      if (this.peers.get(this.subscriberPcKey(remoteId, streamType)) !== pc) return;
+      const ice = pc.iceConnectionState;
+      if (ice === 'connected' || ice === 'completed') return;
+      castLog('ice', `${remoteId.slice(0, 8)} ${ice} 超时，重试 subscribe`, 'warn');
+      this.remoteStreams.delete(streamKey);
+      this.pendingRemoteMedia.delete(streamKey);
+      this.notifyStreams();
+      this.closeSubscriberPc(remoteId, streamType);
+      this.requestMobileStream(remoteId, streamType, true);
+    }, 4000);
+    this.iceRecoveryTimers.set(streamKey, timer);
   }
 
   /** answer 前确保 transceiver 为 recvonly，与手机端 SEND_ONLY offer 对齐 */
@@ -348,11 +439,17 @@ export class WebRTCManager {
   ): RTCPeerConnection {
     const pc = new RTCPeerConnection({
       iceServers: this.iceServers.length > 0 ? this.iceServers : getCachedIceServers(),
+      bundlePolicy: 'max-bundle',
+      iceCandidatePoolSize: 4,
     });
     const subKey = this.subscriberPcKey(remoteId, streamType);
 
     pc.onicecandidate = (event) => {
       if (!event.candidate) return;
+      const type = event.candidate.type ?? 'unknown';
+      if (type === 'relay') {
+        castLog('ice', `本地 relay 候选 ${remoteId.slice(0, 8)}`, 'info');
+      }
       this.signaling.send({
         type: 'ice',
         to: remoteId,
@@ -372,20 +469,7 @@ export class WebRTCManager {
 
         const stream = event.streams[0] ?? new MediaStream([track]);
         const publish = () => {
-          this.trackWatchdogs.delete(streamKey);
-          this.remoteStreams.set(streamKey, {
-            deviceId: remoteId,
-            streamType,
-            stream,
-            hasAlpha: this.deviceAlpha.get(remoteId) ?? false,
-          });
-          castLog(
-            'ontrack',
-            `收到画面 ${remoteId.slice(0, 8)}`,
-            'ok',
-            `tracks=${stream.getVideoTracks().length}`
-          );
-          this.notifyStreams();
+          this.tryPublishRemoteStream(streamKey, remoteId, streamType, stream, track, pc, 'ontrack');
         };
 
         track.onunmute = publish;
@@ -394,8 +478,18 @@ export class WebRTCManager {
 
       pc.onconnectionstatechange = () => {
         castLog('ice', `connection ${remoteId.slice(0, 8)}: ${pc.connectionState}`, 'info');
+        if (pc.connectionState === 'connected') {
+          this.flushPendingRemoteStream(streamKey, remoteId, streamType, pc);
+          const existing = this.remoteStreams.get(streamKey);
+          if (existing) {
+            const rev = (this.streamRevisions.get(streamKey) ?? 0) + 1;
+            this.streamRevisions.set(streamKey, rev);
+            this.remoteStreams.set(streamKey, { ...existing, rev });
+            this.notifyStreams();
+          }
+        }
         if (pc.connectionState === 'connected' && !this.remoteStreams.has(streamKey)) {
-          const watchdog = setTimeout(() => {
+          const watchdog = window.setTimeout(() => {
             if (this.peers.get(subKey) !== pc || this.remoteStreams.has(streamKey)) return;
             castLog(
               'ontrack',
@@ -403,9 +497,14 @@ export class WebRTCManager {
               'warn'
             );
             this.closeSubscriberPc(remoteId, streamType);
-            this.requestMobileStream(remoteId, streamType);
+            this.requestMobileStream(remoteId, streamType, true);
           }, 8000);
           this.trackWatchdogs.set(streamKey, watchdog);
+        }
+        if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+          this.remoteStreams.delete(streamKey);
+          this.pendingRemoteMedia.delete(streamKey);
+          this.notifyStreams();
         }
       };
 
@@ -420,6 +519,14 @@ export class WebRTCManager {
                 ? 'warn'
                 : 'info';
         castLog('ice', `${remoteId.slice(0, 8)}: ${ice}`, level);
+        if (ice === 'connected' || ice === 'completed') {
+          const iceTimer = this.iceRecoveryTimers.get(streamKey);
+          if (iceTimer) {
+            clearTimeout(iceTimer);
+            this.iceRecoveryTimers.delete(streamKey);
+          }
+          this.flushPendingRemoteStream(streamKey, remoteId, streamType, pc);
+        }
         if (ice === 'checking') {
           const iceKey = subKey;
           window.setTimeout(() => {
@@ -438,10 +545,16 @@ export class WebRTCManager {
             }
           }, 15000);
         }
+        if (ice === 'disconnected') {
+          this.scheduleIceRecovery(streamKey, remoteId, streamType, pc);
+        }
         if (ice === 'failed') {
+          this.remoteStreams.delete(streamKey);
+          this.pendingRemoteMedia.delete(streamKey);
+          this.notifyStreams();
           castLog('ice', `ICE 失败，重试 ${remoteId.slice(0, 8)}`, 'err');
           this.closeSubscriberPc(remoteId, streamType);
-          this.requestMobileStream(remoteId, streamType);
+          this.requestMobileStream(remoteId, streamType, true);
         }
       };
     }
@@ -611,6 +724,10 @@ export class WebRTCManager {
     this.lastSubscribeSent.clear();
     for (const t of this.trackWatchdogs.values()) clearTimeout(t);
     this.trackWatchdogs.clear();
+    for (const t of this.iceRecoveryTimers.values()) clearTimeout(t);
+    this.iceRecoveryTimers.clear();
+    this.pendingRemoteMedia.clear();
+    this.streamRevisions.clear();
   }
 }
 

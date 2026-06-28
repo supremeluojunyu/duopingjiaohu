@@ -81,8 +81,19 @@ export function castDiagnosisHint(): string | null {
   if (has('publish_started') && !has('subscribe')) return '未发 subscribe：检查 applyPublisherSync / webrtc 是否就绪';
   if (has('subscribe', '已发送') && !has('offer')) return '手机未发 offer：检查 localVideoTrack 与 subscribe 是否到达手机';
   if (has('offer') && !has('answer')) return 'answer 未发出：检查 SDP 协商与 transceiver 方向';
+  const waitingIce = recent.find(
+    (e) => e.step === 'ontrack' && e.level === 'warn' && e.message.includes('等待 ICE')
+  );
+  if (waitingIce && !has('ice', 'connected')) {
+    return 'SDP 已协商但 ICE 未连通：检查 NAT/防火墙，建议同一 WiFi 或配置 TURN';
+  }
   const iceWarn = recent.find((e) => e.step === 'ice' && e.message.includes('checking'));
   if (iceWarn && !has('ice', 'connected')) return 'ICE 长时间 checking：检查 STUN/网络，建议同一 WiFi 测试';
   if (has('ice', 'connected') && !has('ontrack')) return 'ICE 已连通但无画面：检查 ontrack 与 inbound-rtp 统计';
+  const hasReadyTrack = recent.some(
+    (e) => e.step === 'ontrack' && e.level === 'ok' && e.message.includes('画面就绪')
+  );
+  if (hasReadyTrack && !has('ice', 'connected')) return null;
+  if (has('ice', 'connected') && !hasReadyTrack) return 'ICE 已连通但 track 未就绪：等待画面就绪或检查手机推流';
   return null;
 }

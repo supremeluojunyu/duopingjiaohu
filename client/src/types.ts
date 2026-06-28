@@ -79,6 +79,8 @@ export interface RemoteStream {
   streamType: StreamType;
   stream: MediaStream;
   hasAlpha: boolean;
+  /** ICE 连通后递增，用于强制 GridVideo 重新绑定 */
+  rev?: number;
 }
 
 export interface AppState {

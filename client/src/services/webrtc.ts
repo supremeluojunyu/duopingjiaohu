@@ -224,6 +224,7 @@ export class WebRTCManager {
       return;
     }
 
+    const relayOnly = this.relayOnlyPeers.has(publisherId);
     const ok = this.signaling.send({
       type: 'subscribe',
       to: publisherId,
@@ -231,12 +232,18 @@ export class WebRTCManager {
         publisherId,
         subscriberId: this.localDeviceId,
         streamType,
+        relayOnly,
       },
     });
 
     if (ok) {
       this.lastSubscribeSent.set(subKey, now);
-      castLog('subscribe', `已发送 → ${publisherId.slice(0, 8)}`, 'ok', `subscriber=${this.localDeviceId.slice(0, 8)}`);
+      castLog(
+        'subscribe',
+        `已发送 → ${publisherId.slice(0, 8)}`,
+        'ok',
+        `subscriber=${this.localDeviceId.slice(0, 8)}${relayOnly ? ' relayOnly' : ''}`
+      );
       return;
     }
 

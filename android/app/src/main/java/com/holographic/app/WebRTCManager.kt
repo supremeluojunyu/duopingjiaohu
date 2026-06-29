@@ -497,11 +497,18 @@ class WebRTCManager(
                 val publisherId = msg.payload?.get("publisherId")?.asString ?: return
                 val subscriberId = msg.payload?.get("subscriberId")?.asString ?: return
                 if (publisherId != localDeviceId || subscriberId == localDeviceId) return
-                castLog("subscribe", "收到 ← ${subscriberId.take(8)} (isPublishing=$isPublishing)")
+                val relayOnly = msg.payload?.get("relayOnly")?.asBoolean ?: false
+                castLog("subscribe", "收到 ← ${subscriberId.take(8)} (isPublishing=$isPublishing relayOnly=$relayOnly)")
                 notePeerJoined(subscriberId)
                 activeSubscribers.add(subscriberId)
                 pendingSubscribers.add(subscriberId)
                 pendingOfferRetries.remove(peerKey(subscriberId))?.let { mainHandler.removeCallbacks(it) }
+                if (relayOnly) {
+                    if (relayOnlyPeers.add(subscriberId)) {
+                        castWarn("ice", "订阅方要求 relay-only ${subscriberId.take(8)}")
+                    }
+                    resetPublisherPeerConnection(subscriberId)
+                }
                 if (!isPublishing) {
                     castWarn("subscribe", "尚未推流，已排队 ${subscriberId.take(8)}")
                     return

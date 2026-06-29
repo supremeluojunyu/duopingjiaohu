@@ -623,7 +623,7 @@ export class WebRTCManager {
           'ice',
           '双方有 relay 但 ICE 未连通',
           'err',
-          '请放行 124.220.4.69 UDP 49152-65535，并安装 v0.1.8.44+'
+          '请放行 124.220.4.69 UDP 49152-65535，并安装 v0.1.8.46+'
         );
       }
     } catch {
@@ -682,7 +682,7 @@ export class WebRTCManager {
     streamKey: string | null
   ): RTCPeerConnection {
     const pc = new RTCPeerConnection({
-      iceServers: this.iceServers.length > 0 ? this.iceServers : getCachedIceServers(),
+      iceServers: this.iceServersForPeer(remoteId),
       bundlePolicy: 'max-bundle',
       iceCandidatePoolSize: 10,
       iceTransportPolicy: this.relayOnlyPeers.has(remoteId) ? 'relay' : 'all',
@@ -695,10 +695,11 @@ export class WebRTCManager {
       if (candStr && !this.isUsableIceCandidate(candStr)) return;
       const type = event.candidate.type ?? 'unknown';
       const addr = event.candidate.address ?? candStr.match(/(\d+\.\d+\.\d+\.\d+)/)?.[1] ?? '';
+      if (this.relayOnlyPeers.has(remoteId) && type !== 'relay') return;
       if (addr && !this.shouldSendLocalCandidate(remoteId, addr)) return;
       if (type === 'relay') {
         this.relayReadyPeers.add(remoteId);
-        castLog('ice', `本地 relay 候选 ${remoteId.slice(0, 8)}`, 'info');
+        castLog('ice', `本地 relay ${addr || remoteId.slice(0, 8)}`, 'info');
       } else if (type === 'host' || type === 'srflx') {
         if (addr.includes('.local')) {
           castLog('ice', `本地 mDNS ${remoteId.slice(0, 8)}`, 'warn', addr);
@@ -862,6 +863,17 @@ export class WebRTCManager {
     return ip.split('.').slice(0, 3).join('.');
   }
 
+  /** relay-only 时仅用自建 TURN（124.220.4.69），避免 openrelay 候选干扰 */
+  private iceServersForPeer(remoteId: string): RTCIceServer[] {
+    const servers = this.iceServers.length > 0 ? this.iceServers : getCachedIceServers();
+    if (!this.relayOnlyPeers.has(remoteId)) return servers;
+    const selfTurn = servers.filter((s) => {
+      const urls = Array.isArray(s.urls) ? s.urls : [s.urls];
+      return urls.some((u) => String(u).includes('124.220.4.69'));
+    });
+    return selfTurn.length > 0 ? selfTurn : servers;
+  }
+
   private noteRemoteSubnet(remoteId: string, ip: string, streamType: StreamType): void {
     if (!this.remoteSubnetByPeer.has(remoteId)) {
       this.remoteSubnetByPeer.set(remoteId, this.ipPrefix(ip));
@@ -907,7 +919,8 @@ export class WebRTCManager {
           ? 'host'
           : '?';
     if (type === 'relay') {
-      castLog('ice', '收到远端 relay 候选', 'info');
+      const ip = candidate.match(/\d+\.\d+\.\d+\.\d+/)?.[0];
+      castLog('ice', '收到远端 relay 候选', 'info', ip ?? '');
     } else if (type === 'host' && candidate.includes('.local')) {
       castLog('ice', '收到远端 mDNS 候选', 'warn');
     } else if (type === 'host' || type === 'srflx') {
@@ -1022,6 +1035,14 @@ export class WebRTCManager {
         const hostIp = candidate.candidate?.match(/(\d+\.\d+\.\d+\.\d+)/)?.[1];
         if (hostIp && candidate.candidate?.includes('typ host')) {
           this.noteRemoteSubnet(msg.from, hostIp, streamType);
+          if (this.relayOnlyPeers.has(msg.from)) {
+            castLog(
+              'ice',
+              `远端仍发 host ${hostIp}`,
+              'warn',
+              '手机未同步 relay-only，请更新 APK v0.1.8.46+'
+            );
+          }
         }
         if (candidate.candidate?.includes('typ relay')) {
           this.remoteRelaySeen.add(msg.from);

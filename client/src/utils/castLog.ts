@@ -144,7 +144,7 @@ export function castDiagnosisHint(): string | null {
       return '手机热点 UDP 不通：改用手机连 WiFi，或启动 coturn 走中继';
     }
     if (recent.some((e) => e.message.includes('双方有 TURN') || e.message.includes('双方有 relay'))) {
-      return 'TURN 3478 已通但中继失败：腾讯云安全组放行 UDP 49152-65535，并更新 v0.1.8.44';
+      return 'TURN 3478 已通但中继失败：确认 relay IP 为 124.220.4.69，并更新 v0.1.8.46';
     }
     if (recent.some((e) => e.message.includes('网段不一致') && e.detail?.includes('relay-only'))) {
       return '172.26 不同子网：已自动切换 relay-only，若仍失败请放行 UDP 49152-65535';

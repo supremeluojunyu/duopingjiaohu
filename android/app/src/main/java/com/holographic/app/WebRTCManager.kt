@@ -261,6 +261,16 @@ class WebRTCManager(
         return if (iceServers.isNotEmpty()) iceServers else FALLBACK_ICE
     }
 
+    /** relay-only 时只用自建 TURN，避免 openrelay 分配成功但媒体不通 */
+    private fun activeIceServersForPeer(remoteId: String): List<IceServer> {
+        val all = activeIceServers()
+        if (!relayOnlyPeers.contains(remoteId)) return all
+        val selfTurn = all.filter { server ->
+            server.urls.any { it.contains("124.220.4.69") }
+        }
+        return if (selfTurn.isNotEmpty()) selfTurn else all
+    }
+
     fun ensureReceiveReady() {
         if (receiveReady) return
         runOnMainThread {
@@ -504,10 +514,19 @@ class WebRTCManager(
                 pendingSubscribers.add(subscriberId)
                 pendingOfferRetries.remove(peerKey(subscriberId))?.let { mainHandler.removeCallbacks(it) }
                 if (relayOnly) {
-                    if (relayOnlyPeers.add(subscriberId)) {
-                        castWarn("ice", "订阅方要求 relay-only ${subscriberId.take(8)}")
+                    val added = relayOnlyPeers.add(subscriberId)
+                    castWarn(
+                        "ice",
+                        "订阅方要求 relay-only ${subscriberId.take(8)} added=$added inSet=${relayOnlyPeers.contains(subscriberId)}"
+                    )
+                    iceRecoveryCounts.remove(peerKey(subscriberId))
+                    resetPublisherPeerConnectionImmediately(subscriberId)
+                    if (!isPublishing) {
+                        castWarn("subscribe", "尚未推流，已排队 ${subscriberId.take(8)}")
+                        return
                     }
-                    resetPublisherPeerConnection(subscriberId)
+                    offerStreamToPeer(subscriberId, respondToSubscribe = true)
+                    return
                 }
                 if (!isPublishing) {
                     castWarn("subscribe", "尚未推流，已排队 ${subscriberId.take(8)}")
@@ -735,27 +754,32 @@ class WebRTCManager(
         }
     }
 
-    private fun resetPublisherPeerConnectionOnMain(remoteId: String) {
+    /** 主线程同步关闭并移除 PC（subscribe relay-only 等场景） */
+    private fun resetPublisherPeerConnectionImmediately(remoteId: String) {
         val key = peerKey(remoteId)
         pendingOfferRetries.remove(key)?.let { mainHandler.removeCallbacks(it) }
         makingOffer.remove(key)
         pendingIce.remove(key)
-        val pc = peerConnections.remove(key) ?: return
-        mainHandler.postDelayed({
+        recoveringPeers.remove(key)
+        peerConnections.remove(key)?.let { pc ->
             try {
                 pc.close()
             } catch (e: Exception) {
                 Log.w(TAG, "关闭 PeerConnection 失败: ${e.message}")
             }
-        }, 300)
+        }
     }
 
-    /** PeerConnection 必须在创建线程（主线程）关闭，否则 ICE 回调线程 close 会 native 闪退 */
+    private fun resetPublisherPeerConnectionOnMain(remoteId: String) {
+        resetPublisherPeerConnectionImmediately(remoteId)
+    }
+
+    /** PeerConnection 必须在主线程关闭，否则 ICE 回调线程 close 会 native 闪退 */
     private fun resetPublisherPeerConnection(remoteId: String) {
         if (Looper.myLooper() == Looper.getMainLooper()) {
-            resetPublisherPeerConnectionOnMain(remoteId)
+            resetPublisherPeerConnectionImmediately(remoteId)
         } else {
-            mainHandler.post { resetPublisherPeerConnectionOnMain(remoteId) }
+            mainHandler.post { resetPublisherPeerConnectionImmediately(remoteId) }
         }
     }
 
@@ -1028,21 +1052,27 @@ class WebRTCManager(
                 it.track()?.kind() == "video" && it.track()?.enabled() == true
             }
             if (deadConnection || stuckSignaling || missingVideo) {
-                existing.close()
-                peerConnections.remove(key)
-                pendingIce.remove(key)
-                makingOffer.remove(key)
+                resetPublisherPeerConnectionOnMain(remoteId)
             }
         }
         return getOrCreatePeerConnection(remoteId)
     }
 
     private fun rtcConfigForPeer(remoteId: String): PeerConnection.RTCConfiguration {
-        return PeerConnection.RTCConfiguration(activeIceServers()).apply {
+        val relayOnly = relayOnlyPeers.contains(remoteId)
+        castLog(
+            "ice",
+            "rtcConfig ${remoteId.take(8)} relayOnly=$relayOnly servers=${activeIceServersForPeer(remoteId).size}"
+        )
+        return PeerConnection.RTCConfiguration(activeIceServersForPeer(remoteId)).apply {
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
-            continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
+            continualGatheringPolicy = if (relayOnly) {
+                PeerConnection.ContinualGatheringPolicy.GATHER_ONCE
+            } else {
+                PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
+            }
             tcpCandidatePolicy = PeerConnection.TcpCandidatePolicy.ENABLED
-            iceTransportsType = if (relayOnlyPeers.contains(remoteId)) {
+            iceTransportsType = if (relayOnly) {
                 PeerConnection.IceTransportsType.RELAY
             } else {
                 PeerConnection.IceTransportsType.ALL
@@ -1093,6 +1123,10 @@ class WebRTCManager(
         val pc = peerFactory.createPeerConnection(rtcConfig, object : PeerConnection.Observer {
             override fun onIceCandidate(candidate: IceCandidate?) {
                 candidate ?: return
+                if (peerConnections[key] !== pc) {
+                    Log.d(TAG, "忽略已重置 PC 的 ICE 候选: $remoteId")
+                    return
+                }
                 if (!isUsableIceCandidate(candidate.sdp)) {
                     Log.d(TAG, "跳过无效 ICE 候选: ${candidate.sdp.take(80)}")
                     return
@@ -1103,11 +1137,16 @@ class WebRTCManager(
                     candidate.sdp.contains("typ host") -> "host"
                     else -> "unknown"
                 }
+                if (relayOnlyPeers.contains(remoteId) && candType != "relay") {
+                    Log.d(TAG, "relay-only 跳过 $candType: $remoteId")
+                    return
+                }
                 Log.d(TAG, "ICE 候选 ($candType): $remoteId")
                 when (candType) {
                     "relay" -> {
                         relayReadyPeers.add(remoteId)
-                        castLog("ice", "发送 relay 候选 → ${remoteId.take(8)}")
+                        val ip = Regex("""(\d+\.\d+\.\d+\.\d+)""").find(candidate.sdp)?.groupValues?.get(1)
+                        castLog("ice", "发送 relay ${ip ?: "?"} → ${remoteId.take(8)}")
                     }
                     "host", "srflx" -> {
                         val ip = Regex("""(\d+\.\d+\.\d+\.\d+)""").find(candidate.sdp)?.groupValues?.get(1)

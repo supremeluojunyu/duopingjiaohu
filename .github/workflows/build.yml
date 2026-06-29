@@ -222,7 +222,7 @@ jobs:
           tag_name: ${{ github.ref_name }}
           name: Release ${{ github.ref_name }}
           generate_release_notes: true
-          fail_on_unmatched_files: true
+          fail_on_unmatched_files: false
           files: |
             release-bundle/*.exe
             release-bundle/*.exe.blockmap

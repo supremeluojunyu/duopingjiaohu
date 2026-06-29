@@ -1120,10 +1120,11 @@ class WebRTCManager(
         val peerFactory = factory ?: throw IllegalStateException("PeerConnectionFactory 未初始化")
         val rtcConfig = rtcConfigForPeer(remoteId)
 
-        val pc = peerFactory.createPeerConnection(rtcConfig, object : PeerConnection.Observer {
+        var pcHolder: PeerConnection? = null
+        pcHolder = peerFactory.createPeerConnection(rtcConfig, object : PeerConnection.Observer {
             override fun onIceCandidate(candidate: IceCandidate?) {
                 candidate ?: return
-                if (peerConnections[key] !== pc) {
+                if (peerConnections[key] !== pcHolder) {
                     Log.d(TAG, "忽略已重置 PC 的 ICE 候选: $remoteId")
                     return
                 }
@@ -1254,6 +1255,7 @@ class WebRTCManager(
             override fun onRenegotiationNeeded() {}
         }) ?: throw IllegalStateException("PeerConnection 创建失败: $remoteId")
 
+        val pc = pcHolder
         attachLocalTracks(pc)
         peerConnections[key] = pc
         return pc
